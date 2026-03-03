@@ -1,0 +1,111 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "Pupload",
+  "projectDescription": "Upload service and orchestrator for distributed file processing pipelines",
+  "theme": "aspen",
+  "primaryColor": "#8B5CF6",
+  "lightColor": "#A78BFA",
+  "darkColor": "#7C3AED",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/flows",
+              "concepts/nodes",
+              "concepts/resources",
+              "concepts/stores",
+              "concepts/architecture"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/creating-flows",
+              "guides/custom-nodes",
+              "guides/resource-tiers",
+              "guides/storage-backends",
+              "guides/deployment"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/image-processing",
+              "examples/video-transcoding",
+              "examples/document-pipeline",
+              "examples/ml-inference"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "CLI Commands",
+            "pages": [
+              "cli/init",
+              "cli/dev",
+              "cli/test",
+              "cli/validate",
+              "cli/push",
+              "cli/controller"
+            ]
+          },
+          {
+            "group": "API Reference",
+            "pages": [
+              "api/overview",
+              "api/flows",
+              "api/projects",
+              "api/upload"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/controller",
+              "configuration/worker",
+              "configuration/flow-schema"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "YAML-based flow definitions for building processing pipelines",
+    "Docker-based node execution with presigned URL handling",
+    "Resource tier management (CPU, memory, GPU) with independent worker scaling",
+    "Controller/worker architecture with Redis-backed task queue",
+    "Multiple storage backend support (S3, local filesystem)",
+    "Flow validation and testing tools",
+    "REST API for remote execution and monitoring",
+    "Local development mode with integrated controller and worker"
+  ],
+  "publicApiSurface": [
+    "pup init - Initialize new project",
+    "pup dev - Start development server",
+    "pup test - Test flow execution",
+    "pup validate - Validate flow definitions",
+    "pup push - Push project to controller",
+    "pup controller add/list/remove - Manage controllers",
+    "POST /v1/flow/test - Execute flow test",
+    "GET /v1/flow/status/{flowRunID} - Get flow run status",
+    "GET /v1/project/{projectID} - Get project details",
+    "POST /v1/project/{projectID} - Save project",
+    "POST /v1/project/{projectID}/flows/{flowName} - Execute flow"
+  ]
+}
