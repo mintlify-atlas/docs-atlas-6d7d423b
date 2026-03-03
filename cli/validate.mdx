@@ -1,0 +1,160 @@
+---
+title: pup validate
+description: Validate flows in your project against their node definitions
+---
+
+## Overview
+
+The `pup validate` command checks your project flows for errors and warnings. It validates flows against their node definitions to catch configuration issues before deployment or testing.
+
+## Usage
+
+```bash
+pup validate [flow]
+```
+
+## Arguments
+
+<ParamField path="flow" type="string" optional>
+  Optional flow name to validate. If provided, only the specified flow will be validated. If omitted, all flows in the project will be validated.
+</ParamField>
+
+## Examples
+
+### Validate all flows
+
+<CodeGroup>
+```bash Terminal
+pup validate
+```
+
+```bash Output
+✓ image-processing: valid
+✓ video-transcoding: valid
+✗ data-pipeline:
+  ERROR [E001] missing_input: Required input 'source' is not connected
+  WARN  [W002] unused_output: Output 'debug' is not used by any node
+```
+</CodeGroup>
+
+### Validate specific flow
+
+<CodeGroup>
+```bash Terminal
+pup validate image-processing
+```
+
+```bash Output
+✓ image-processing: valid
+```
+</CodeGroup>
+
+### Example with errors
+
+```bash
+pup validate data-pipeline
+```
+
+```bash
+✗ data-pipeline:
+  ERROR [E001] missing_input: Required input 'source' is not connected
+  ERROR [E003] invalid_node: Node 'processor' references undefined node type 'custom-processor'
+  WARN  [W002] unused_output: Output 'debug' is not used by any node
+```
+
+## Exit codes
+
+- **0**: All flows are valid (no errors)
+- **1**: One or more flows have validation errors
+
+<Note>
+  Warnings do not cause the command to exit with error code 1. Only errors affect the exit code.
+</Note>
+
+## Validation checks
+
+The validate command performs several types of checks:
+
+### Error-level checks
+
+- **Missing required inputs**: Ensures all required node inputs are connected
+- **Invalid node references**: Verifies all referenced node types are defined
+- **Type mismatches**: Checks that connected edges have compatible types
+- **Circular dependencies**: Detects cycles in the flow graph
+- **Store configuration**: Validates S3 and storage configurations
+
+### Warning-level checks
+
+- **Unused outputs**: Identifies outputs that aren't consumed by any node
+- **Deprecated nodes**: Flags usage of deprecated node types
+- **Suboptimal configurations**: Suggests improvements to flow configuration
+
+## Output format
+
+For each flow, the validation result shows:
+
+- **Status indicator**: ✓ for valid flows, ✗ for flows with issues
+- **Flow name**: The name of the validated flow
+- **Errors**: Listed with `ERROR` prefix, error code in brackets, and description
+- **Warnings**: Listed with `WARN` prefix, warning code in brackets, and description
+
+<Tip>
+  Run `pup validate` before `pup test` to catch configuration errors early and save time during development.
+</Tip>
+
+## When to validate
+
+Run validation:
+
+- **Before testing**: Catch errors before running tests
+- **Before deployment**: Ensure flows are correct before pushing to production
+- **After changes**: Verify modifications haven't introduced issues
+- **In CI/CD**: Automate validation as part of your build pipeline
+
+### CI/CD integration
+
+```bash
+#!/bin/bash
+# Add to your CI pipeline
+pup validate
+if [ $? -ne 0 ]; then
+  echo "Flow validation failed"
+  exit 1
+fi
+```
+
+<Warning>
+  Flows with validation errors may fail at runtime or produce unexpected results. Always fix errors before deploying to production.
+</Warning>
+
+## Common validation errors
+
+### Missing inputs
+
+```
+ERROR [E001] missing_input: Required input 'data' is not connected
+```
+
+**Solution**: Connect the missing input in your flow definition or mark it as optional.
+
+### Invalid node type
+
+```
+ERROR [E003] invalid_node: Node 'processor' references undefined node type 'custom-node'
+```
+
+**Solution**: Ensure the node type is defined in your node definitions or fix the typo in the node type name.
+
+### Type mismatch
+
+```
+ERROR [E004] type_mismatch: Cannot connect 'string' output to 'image' input
+```
+
+**Solution**: Ensure the output type matches the input type, or add a conversion node between them.
+
+## Related commands
+
+- [pup test](/cli/test) - Test validated flows
+- [pup dev](/cli/dev) - Run local development environment
+- [pup push](/cli/push) - Deploy validated flows to production

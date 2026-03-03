@@ -1,0 +1,372 @@
+---
+title: Video transcoding
+description: Multi-resolution video transcoding pipeline with adaptive bitrate streaming support
+---
+
+This example shows how to transcode uploaded videos into multiple resolutions and formats for adaptive bitrate streaming (HLS/DASH).
+
+## Flow overview
+
+The pipeline transcodes videos through these stages:
+
+<Steps>
+  <Step title="Upload">
+    User uploads a video file
+  </Step>
+  <Step title="Extract metadata">
+    Get video duration, resolution, codec info
+  </Step>
+  <Step title="Generate poster">
+    Extract a frame for video thumbnail/poster
+  </Step>
+  <Step title="Transcode resolutions">
+    Create 1080p, 720p, 480p, and 360p versions
+  </Step>
+  <Step title="Generate HLS manifests">
+    Create .m3u8 playlists for adaptive streaming
+  </Step>
+  <Step title="Store to CDN">
+    Upload all outputs to CDN-backed storage
+  </Step>
+</Steps>
+
+## Complete flow configuration
+
+```yaml video-transcoding.yaml
+Name: video-transcoding
+
+Timeout: "30m"
+
+# Storage configuration
+Stores:
+  - Name: VideoUploads
+    Type: s3
+    Params:
+      BucketName: video-uploads
+      Region: us-east-1
+
+  - Name: TranscodedVideos
+    Type: s3
+    Params:
+      BucketName: transcoded-videos
+      Region: us-east-1
+      # CDN-backed bucket
+      CloudFrontDistribution: d1234567890abc
+
+# Input and output datawells
+DataWells:
+  - Store: VideoUploads
+    Edge: video-input
+    Source: upload
+
+  - Store: TranscodedVideos
+    Edge: metadata-output
+  
+  - Store: TranscodedVideos
+    Edge: poster-output
+  
+  - Store: TranscodedVideos
+    Edge: video-1080p
+  
+  - Store: TranscodedVideos
+    Edge: video-720p
+  
+  - Store: TranscodedVideos
+    Edge: video-480p
+  
+  - Store: TranscodedVideos
+    Edge: video-360p
+  
+  - Store: TranscodedVideos
+    Edge: hls-manifest
+
+# Processing nodes
+Nodes:
+  # Extract video metadata
+  - ID: metadata-extractor
+    Uses: github.com/pupload/pupload/ffmpeg
+    Inputs:
+      - Name: VideoIn
+        Edge: video-input
+    Outputs:
+      - Name: MetadataOut
+        Edge: metadata-output
+    Command: Probe
+
+  # Generate poster image from frame at 1 second
+  - ID: poster-generator
+    Uses: github.com/pupload/pupload/ffmpeg
+    Inputs:
+      - Name: VideoIn
+        Edge: video-input
+    Outputs:
+      - Name: ImageOut
+        Edge: poster-output
+    Command: ExtractFrame
+    Flags:
+      - Name: Timestamp
+        Value: "00:00:01"
+      - Name: Format
+        Value: "jpg"
+      - Name: Quality
+        Value: "90"
+
+  # Transcode to 1080p (Full HD)
+  - ID: transcode-1080p
+    Uses: github.com/pupload/pupload/ffmpeg
+    Inputs:
+      - Name: VideoIn
+        Edge: video-input
+    Outputs:
+      - Name: VideoOut
+        Edge: video-1080p
+    Command: Encode
+    Flags:
+      - Name: Height
+        Value: "1080"
+      - Name: Codec
+        Value: "h264"
+      - Name: Bitrate
+        Value: "5000k"
+      - Name: AudioCodec
+        Value: "aac"
+      - Name: AudioBitrate
+        Value: "192k"
+
+  # Transcode to 720p (HD)
+  - ID: transcode-720p
+    Uses: github.com/pupload/pupload/ffmpeg
+    Inputs:
+      - Name: VideoIn
+        Edge: video-input
+    Outputs:
+      - Name: VideoOut
+        Edge: video-720p
+    Command: Encode
+    Flags:
+      - Name: Height
+        Value: "720"
+      - Name: Codec
+        Value: "h264"
+      - Name: Bitrate
+        Value: "3000k"
+      - Name: AudioCodec
+        Value: "aac"
+      - Name: AudioBitrate
+        Value: "128k"
+
+  # Transcode to 480p (SD)
+  - ID: transcode-480p
+    Uses: github.com/pupload/pupload/ffmpeg
+    Inputs:
+      - Name: VideoIn
+        Edge: video-input
+    Outputs:
+      - Name: VideoOut
+        Edge: video-480p
+    Command: Encode
+    Flags:
+      - Name: Height
+        Value: "480"
+      - Name: Codec
+        Value: "h264"
+      - Name: Bitrate
+        Value: "1500k"
+      - Name: AudioCodec
+        Value: "aac"
+      - Name: AudioBitrate
+        Value: "96k"
+
+  # Transcode to 360p (Mobile)
+  - ID: transcode-360p
+    Uses: github.com/pupload/pupload/ffmpeg
+    Inputs:
+      - Name: VideoIn
+        Edge: video-input
+    Outputs:
+      - Name: VideoOut
+        Edge: video-360p
+    Command: Encode
+    Flags:
+      - Name: Height
+        Value: "360"
+      - Name: Codec
+        Value: "h264"
+      - Name: Bitrate
+        Value: "800k"
+      - Name: AudioCodec
+        Value: "aac"
+      - Name: AudioBitrate
+        Value: "64k"
+
+  # Generate HLS manifest
+  - ID: hls-packager
+    Uses: github.com/pupload/pupload/ffmpeg
+    Inputs:
+      - Name: Video1080p
+        Edge: video-1080p
+      - Name: Video720p
+        Edge: video-720p
+      - Name: Video480p
+        Edge: video-480p
+      - Name: Video360p
+        Edge: video-360p
+    Outputs:
+      - Name: ManifestOut
+        Edge: hls-manifest
+    Command: HLSPackage
+    Flags:
+      - Name: SegmentDuration
+        Value: "6"
+```
+
+## Node details
+
+### Metadata extractor
+
+Uses FFprobe to extract video metadata including duration, resolution, codec, bitrate, and framerate. This metadata can be stored in your database for display and validation.
+
+- **Resource tier**: `c-small` (fast, minimal CPU)
+- **Output**: JSON file with complete video metadata
+
+### Poster generator
+
+Extracts a single frame at 1 second into the video for use as a thumbnail or poster image. Adjust the timestamp to capture a better representative frame.
+
+- **Resource tier**: `c-small`
+- **Output**: High-quality JPEG image
+
+<Tip>
+For better poster quality, run multiple extractions at different timestamps and use ML to select the best frame (clearest, most interesting composition).
+</Tip>
+
+### Transcoding nodes (1080p, 720p, 480p, 360p)
+
+These four nodes run in **parallel**, each generating a different resolution with optimized bitrates:
+
+| Resolution | Bitrate | Use case |
+|------------|---------|----------|
+| 1080p | 5000k | Desktop, high-speed connections |
+| 720p | 3000k | Standard desktop, tablets |
+| 480p | 1500k | Mobile devices, moderate connections |
+| 360p | 800k | Poor connections, data saving |
+
+All use H.264 codec for broad compatibility and AAC audio.
+
+<Note>
+**Resource requirements**: Each transcode node should use `c-medium` or `c-large` tiers. For GPU-accelerated encoding (NVENC, QuickSync), use `g-small` tiers with appropriate Docker images.
+</Note>
+
+### HLS packager
+
+Takes all four transcoded resolutions and generates an HLS manifest (.m3u8 master playlist). Players will automatically select the best quality based on available bandwidth.
+
+- **Resource tier**: `c-small`
+- **Inputs**: All four transcoded videos
+- **Output**: Master manifest + variant playlists
+
+## Running the flow
+
+<Tabs>
+  <Tab title="CLI">
+    ```bash
+    # Test with local video
+    pup test video-transcoding \
+      --input video-input=./movie.mp4 \
+      --controller localhost:8080
+    ```
+  </Tab>
+  <Tab title="API">
+    ```bash
+    curl -X POST http://localhost:8080/v1/projects/{project_id}/flows/video-transcoding \
+      -H "Content-Type: application/json" \
+      -d '{
+        "inputs": {
+          "video-input": "s3://video-uploads/raw/video-123.mp4"
+        }
+      }'
+    ```
+  </Tab>
+  <Tab title="SDK (Python)">
+    ```python
+    from pupload import Client
+
+    client = Client("http://localhost:8080")
+    
+    run = client.run_flow(
+        project_id="my-project",
+        flow_name="video-transcoding",
+        inputs={
+            "video-input": "s3://video-uploads/raw/video-123.mp4"
+        }
+    )
+    
+    print(f"Run ID: {run.id}")
+    print(f"Status: {run.status}")
+    ```
+  </Tab>
+</Tabs>
+
+## Output structure
+
+After transcoding completes:
+
+```
+transcoded-videos/
+├── {run-id}/metadata-output/{artifact-id}.json
+├── {run-id}/poster-output/{artifact-id}.jpg
+├── {run-id}/video-1080p/{artifact-id}.mp4
+├── {run-id}/video-720p/{artifact-id}.mp4
+├── {run-id}/video-480p/{artifact-id}.mp4
+├── {run-id}/video-360p/{artifact-id}.mp4
+└── {run-id}/hls-manifest/
+    ├── master.m3u8
+    ├── 1080p.m3u8
+    ├── 720p.m3u8
+    ├── 480p.m3u8
+    └── 360p.m3u8
+```
+
+## Performance considerations
+
+### Parallel execution
+
+All transcode nodes run in parallel since they only depend on the original input. On a cluster with sufficient resources, a 10-minute video can be transcoded to all four resolutions in approximately the time it takes to transcode once.
+
+### Resource allocation
+
+Configure your workers to handle transcoding load:
+
+```yaml worker.yaml
+worker:
+  resources:
+    - c-medium  # Subscribe to CPU transcode tasks
+    - c-large   # Subscribe to higher-resolution transcodes
+  docker:
+    limits:
+      cpu: "4"
+      memory: "8GB"
+```
+
+### GPU acceleration
+
+For 3-5x faster encoding, use GPU-accelerated workers:
+
+```yaml worker.yaml
+worker:
+  resources:
+    - g-small  # NVIDIA GPU workers
+  docker:
+    runtime: nvidia
+    limits:
+      gpus: "1"
+```
+
+Update node definitions to use GPU-enabled FFmpeg images.
+
+## Next steps
+
+- Add DASH packaging alongside HLS
+- Implement content-aware encoding to optimize bitrates per video
+- Set up progress tracking to show transcode progress to users
+- Configure [cleanup policies](/concepts/flows) to delete source files after transcoding

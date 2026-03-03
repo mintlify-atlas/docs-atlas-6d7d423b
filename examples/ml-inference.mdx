@@ -1,0 +1,431 @@
+---
+title: ML inference
+description: GPU-accelerated machine learning inference pipeline with preprocessing and postprocessing
+---
+
+This example demonstrates a complete ML inference pipeline that handles image uploads, preprocessing, GPU inference, and postprocessing for object detection or image classification tasks.
+
+## Flow overview
+
+The pipeline processes images through these stages:
+
+<Steps>
+  <Step title="Upload">
+    User uploads an image for inference
+  </Step>
+  <Step title="Preprocess">
+    Resize, normalize, and prepare image for model input
+  </Step>
+  <Step title="GPU inference">
+    Run the ML model on GPU-enabled workers
+  </Step>
+  <Step title="Postprocess">
+    Parse model output, apply NMS, format results
+  </Step>
+  <Step title="Visualize">
+    Draw bounding boxes and labels on the original image
+  </Step>
+  <Step title="Store results">
+    Save predictions and annotated image
+  </Step>
+</Steps>
+
+## Complete flow configuration
+
+```yaml ml-inference.yaml
+Name: ml-inference
+
+Timeout: "10m"
+
+# Storage configuration
+Stores:
+  - Name: ImageUploads
+    Type: s3
+    Params:
+      BucketName: ml-image-uploads
+      Region: us-east-1
+
+  - Name: InferenceResults
+    Type: s3
+    Params:
+      BucketName: ml-inference-results
+      Region: us-east-1
+
+# Model weights store
+  - Name: ModelStore
+    Type: s3
+    Params:
+      BucketName: ml-models
+      Region: us-east-1
+
+# Input and output datawells
+DataWells:
+  - Store: ImageUploads
+    Edge: image-input
+    Source: upload
+
+  # Model weights (static)
+  - Store: ModelStore
+    Edge: model-weights
+    Source: static
+    Key: "yolov8/weights.pt"
+
+  # Processing outputs
+  - Store: InferenceResults
+    Edge: preprocessed-image
+  
+  - Store: InferenceResults
+    Edge: raw-predictions
+  
+  - Store: InferenceResults
+    Edge: predictions-json
+  
+  - Store: InferenceResults
+    Edge: annotated-image
+
+# Processing nodes
+Nodes:
+  # Preprocess image for model input
+  - ID: preprocessor
+    Uses: github.com/pupload/pupload/ml-preprocess
+    Inputs:
+      - Name: ImageIn
+        Edge: image-input
+    Outputs:
+      - Name: ProcessedImage
+        Edge: preprocessed-image
+    Command: Preprocess
+    Flags:
+      - Name: TargetSize
+        Value: "640,640"  # YOLOv8 input size
+      - Name: Normalize
+        Value: "imagenet"  # Use ImageNet mean/std
+      - Name: Format
+        Value: "tensor"  # Output as tensor format
+
+  # Run GPU inference
+  - ID: inference-engine
+    Uses: github.com/pupload/pupload/pytorch-inference
+    Inputs:
+      - Name: ImageTensor
+        Edge: preprocessed-image
+      - Name: ModelWeights
+        Edge: model-weights
+    Outputs:
+      - Name: RawPredictions
+        Edge: raw-predictions
+    Command: Infer
+    Flags:
+      - Name: Framework
+        Value: "pytorch"
+      - Name: Device
+        Value: "cuda"
+      - Name: BatchSize
+        Value: "1"
+      - Name: Precision
+        Value: "fp16"  # Half precision for faster inference
+
+  # Postprocess predictions
+  - ID: postprocessor
+    Uses: github.com/pupload/pupload/ml-postprocess
+    Inputs:
+      - Name: RawPredictions
+        Edge: raw-predictions
+      - Name: OriginalImage
+        Edge: image-input
+    Outputs:
+      - Name: Predictions
+        Edge: predictions-json
+    Command: Postprocess
+    Flags:
+      - Name: Task
+        Value: "object-detection"
+      - Name: ConfidenceThreshold
+        Value: "0.5"
+      - Name: NMSThreshold
+        Value: "0.45"  # Non-maximum suppression
+      - Name: MaxDetections
+        Value: "100"
+
+  # Visualize predictions on image
+  - ID: visualizer
+    Uses: github.com/pupload/pupload/ml-visualize
+    Inputs:
+      - Name: ImageIn
+        Edge: image-input
+      - Name: Predictions
+        Edge: predictions-json
+    Outputs:
+      - Name: AnnotatedImage
+        Edge: annotated-image
+    Command: DrawBoxes
+    Flags:
+      - Name: BoxColor
+        Value: "auto"  # Color by class
+      - Name: LineWidth
+        Value: "2"
+      - Name: FontSize
+        Value: "16"
+      - Name: ShowConfidence
+        Value: "true"
+```
+
+## Node details
+
+### Preprocessor
+
+Prepares the input image for the ML model:
+- Resizes to model's expected input size (e.g., 640x640 for YOLOv8)
+- Normalizes pixel values using ImageNet statistics
+- Converts to tensor format (CHW layout)
+- Optionally applies augmentations for test-time augmentation
+
+- **Resource tier**: `c-small` (CPU preprocessing)
+- **Output**: Preprocessed image tensor
+
+<Tip>
+**Batch processing**: For high throughput, modify the preprocessor to output batches of multiple images and adjust the inference batch size accordingly.
+</Tip>
+
+### Inference engine
+
+Runs the ML model on GPU workers. This is the most computationally expensive step.
+
+- **Resource tier**: `g-small`, `g-medium`, or `g-large` (GPU required)
+- **Supported frameworks**: PyTorch, TensorFlow, ONNX Runtime
+- **Precision options**:
+  - `fp32`: Full precision (highest accuracy)
+  - `fp16`: Half precision (2x faster, minimal accuracy loss)
+  - `int8`: Quantized (4x faster, slight accuracy loss)
+
+**GPU requirements**:
+```yaml worker.yaml
+worker:
+  resources:
+    - g-small  # NVIDIA GPU workers
+  docker:
+    runtime: nvidia
+    limits:
+      gpus: "1"
+      memory: "8GB"
+```
+
+<Note>
+**Model loading**: The model weights are loaded from a static datawell. Upload your trained model to the ModelStore S3 bucket before running inference.
+</Note>
+
+### Postprocessor
+
+Parses raw model outputs and applies postprocessing:
+
+- **Non-maximum suppression (NMS)**: Removes duplicate detections
+- **Confidence filtering**: Keeps only high-confidence predictions
+- **Coordinate transformation**: Scales boxes back to original image dimensions
+- **Class mapping**: Maps class IDs to human-readable labels
+
+- **Resource tier**: `c-small` (CPU postprocessing)
+- **Output**: JSON with structured predictions
+
+**Example output**:
+```json
+{
+  "predictions": [
+    {
+      "class": "person",
+      "confidence": 0.94,
+      "bbox": [120, 50, 250, 400],
+      "class_id": 0
+    },
+    {
+      "class": "dog",
+      "confidence": 0.87,
+      "bbox": [300, 200, 450, 380],
+      "class_id": 16
+    }
+  ],
+  "inference_time_ms": 23,
+  "num_detections": 2
+}
+```
+
+### Visualizer
+
+Draws bounding boxes, labels, and confidence scores on the original image for visual verification.
+
+- **Resource tier**: `c-small`
+- **Output**: Annotated JPEG image
+- **Features**: Auto-colored boxes per class, confidence scores, customizable styling
+
+## Running the flow
+
+<Tabs>
+  <Tab title="CLI">
+    ```bash
+    # Test with local image
+    pup test ml-inference \
+      --input image-input=./photo.jpg \
+      --controller localhost:8080
+
+    # Batch processing multiple images
+    for img in ./images/*.jpg; do
+      pup test ml-inference \
+        --input image-input="$img" \
+        --controller localhost:8080 &
+    done
+    wait
+    ```
+  </Tab>
+  <Tab title="API">
+    ```bash
+    curl -X POST http://localhost:8080/v1/projects/{project_id}/flows/ml-inference \
+      -H "Content-Type: application/json" \
+      -d '{
+        "inputs": {
+          "image-input": "s3://ml-image-uploads/photo-123.jpg"
+        }
+      }'
+    ```
+  </Tab>
+  <Tab title="SDK (Python)">
+    ```python
+    from pupload import Client
+    import asyncio
+
+    client = Client("http://localhost:8080")
+    
+    # Single inference
+    run = client.run_flow(
+        project_id="my-project",
+        flow_name="ml-inference",
+        inputs={
+            "image-input": "s3://ml-image-uploads/photo.jpg"
+        }
+    )
+    
+    # Batch inference (parallel)
+    async def batch_inference(image_urls):
+        tasks = [
+            client.run_flow_async(
+                project_id="my-project",
+                flow_name="ml-inference",
+                inputs={"image-input": url}
+            )
+            for url in image_urls
+        ]
+        return await asyncio.gather(*tasks)
+    
+    # Run batch
+    images = [f"s3://uploads/img-{i}.jpg" for i in range(100)]
+    results = asyncio.run(batch_inference(images))
+    ```
+  </Tab>
+</Tabs>
+
+## Output structure
+
+After inference completes:
+
+```
+ml-inference-results/
+├── {run-id}/preprocessed-image/{artifact-id}.tensor
+├── {run-id}/raw-predictions/{artifact-id}.tensor
+├── {run-id}/predictions-json/{artifact-id}.json
+└── {run-id}/annotated-image/{artifact-id}.jpg
+```
+
+## Performance optimization
+
+### GPU utilization
+
+**Key factors for GPU efficiency**:
+
+1. **Batch size**: Increase batch size to fully utilize GPU memory
+   - Single image: ~20% GPU utilization
+   - Batch of 8: ~80% GPU utilization
+   - Batch of 16: ~95% GPU utilization
+
+2. **Model precision**: Use FP16 for 2x speedup with minimal accuracy loss
+
+3. **Model optimization**: Use TensorRT or ONNX Runtime for optimized inference
+
+### Cost optimization
+
+GPU workers are expensive. Optimize costs:
+
+```yaml
+# CPU preprocessing (cheap)
+preprocessor:
+  resource_tier: c-small
+
+# GPU inference (expensive, but necessary)
+inference-engine:
+  resource_tier: g-small
+
+# CPU postprocessing (cheap)
+postprocessor:
+  resource_tier: c-small
+```
+
+Only the inference node requires GPU. Pre/postprocessing runs on cheap CPU workers.
+
+### Throughput optimization
+
+For high-throughput scenarios:
+
+1. **Queue batching**: Modify the preprocessor to accumulate images into batches
+2. **Dynamic batching**: Let the inference engine wait up to 100ms to fill a batch
+3. **Multiple GPU workers**: Scale GPU workers horizontally
+
+```yaml worker.yaml
+worker:
+  resources:
+    - g-small
+  scaling:
+    min_workers: 2
+    max_workers: 10
+    target_queue_depth: 5
+```
+
+## Model examples
+
+### Object detection (YOLOv8)
+
+The example above uses YOLOv8 for object detection. Detects multiple objects with bounding boxes.
+
+**Use cases**: Security cameras, autonomous vehicles, retail analytics
+
+### Image classification (ResNet)
+
+For classification tasks, simplify the flow:
+- Remove bounding box visualization
+- Postprocessor outputs top-k class probabilities
+- No NMS required
+
+**Use cases**: Content moderation, medical imaging, product categorization
+
+### Semantic segmentation
+
+For pixel-level segmentation:
+- Postprocessor generates segmentation masks
+- Visualizer overlays colored masks
+- Larger model outputs (H×W masks)
+
+**Use cases**: Medical imaging, autonomous driving, satellite imagery
+
+### Image generation (Stable Diffusion)
+
+For generative models:
+- Input is text prompt instead of image
+- Preprocessing converts text to embeddings
+- Output is generated image
+- No postprocessing needed
+
+**Use cases**: Creative tools, product design, synthetic data generation
+
+## Next steps
+
+- Add model versioning to A/B test different models
+- Implement confidence-based routing to send low-confidence predictions to human review
+- Set up monitoring to track inference latency and GPU utilization
+- Configure [autoscaling](/guides/deployment) to handle traffic spikes
+- Add test-time augmentation for improved accuracy

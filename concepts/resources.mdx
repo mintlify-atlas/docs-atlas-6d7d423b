@@ -1,0 +1,325 @@
+---
+title: Resources
+description: Understanding resource tiers, CPU, memory, storage, and GPU allocation in Pupload
+---
+
+## Resource management
+
+Pupload uses a tier-based resource allocation system to ensure nodes get the computing resources they need. Each node definition specifies a resource tier, and workers automatically allocate the appropriate CPU cores, memory, storage, and optional GPU access.
+
+## Resource definition structure
+
+```go
+type ResourceDefinition struct {
+    CPU     CPUCoreInput
+    Memory  MemoryInput
+    Storage StorageInput
+    GPU     *GPUDefinition
+}
+
+type GPUDefinition struct {
+    Vendor string // nvidia, intel, amd, or any.
+    Count  GPUCountInput
+    Memory GPUMemoryInput
+}
+```
+
+From `internal/resources/types.go:3-14`
+
+<Note>
+Memory and storage inputs support units: `b`, `kb`, `mb`, `gb`, `tb`. Examples: `"2gb"`, `"512mb"`, `"1tb"`
+</Note>
+
+## Standard resource tiers
+
+Pupload provides predefined resource tiers for different workload types:
+
+### CPU-Optimized (C-series)
+
+Ideal for compute-intensive tasks without heavy memory requirements:
+
+```go
+C_Nano = ResourceDefinition{
+    CPU:     1,
+    Memory:  "512mb",
+    Storage: "10gb",
+}
+
+C_Small = ResourceDefinition{
+    CPU:     2,
+    Memory:  "2gb",
+    Storage: "20gb",
+}
+
+C_Medium = ResourceDefinition{
+    CPU:     4,
+    Memory:  "4gb",
+    Storage: "50gb",
+}
+
+C_Large = ResourceDefinition{
+    CPU:     8,
+    Memory:  "8gb",
+    Storage: "100gb",
+}
+```
+
+From `internal/resources/defaults.go:7-35`
+
+**Available C-series tiers**: `c-nano`, `c-micro`, `c-small` (default), `c-medium`, `c-large`, `c-xlarge`, `c-2xlarge`, `c-4xlarge`
+
+### Memory-Optimized (M-series)
+
+For workloads requiring high memory-to-CPU ratios:
+
+```go
+M_Small = ResourceDefinition{
+    CPU:     2,
+    Memory:  "4gb",
+    Storage: "20gb",
+}
+
+M_Medium = ResourceDefinition{
+    CPU:     4,
+    Memory:  "16gb",
+    Storage: "50gb",
+}
+
+M_Large = ResourceDefinition{
+    CPU:     8,
+    Memory:  "32gb",
+    Storage: "100gb",
+}
+```
+
+From `internal/resources/defaults.go:56-72`
+
+**Available M-series tiers**: `m-small`, `m-medium`, `m-large`, `m-xlarge`, `m-2xlarge`, `m-4xlarge`
+
+### GPU Generic (G-series)
+
+For GPU workloads without vendor-specific requirements:
+
+```go
+G_Small = ResourceDefinition{ // RTX 3060, T4, RX 6600
+    CPU:     4,
+    Memory:  "16gb",
+    Storage: "100gb",
+    GPU: &GPUDefinition{
+        Vendor: "any",
+        Count:  1,
+        Memory: "8gb",
+    },
+}
+
+G_Medium = ResourceDefinition{ // RTX 4080, RTX A4000, RX 7900 XT
+    CPU:     8,
+    Memory:  "32gb",
+    Storage: "250gb",
+    GPU: &GPUDefinition{
+        Vendor: "any",
+        Count:  1,
+        Memory: "16gb",
+    },
+}
+
+G_Large = ResourceDefinition{ // RTX 4090, A5000, L40, RX 7900 XTX
+    CPU:     12,
+    Memory:  "48gb",
+    Storage: "500gb",
+    GPU: &GPUDefinition{
+        Vendor: "any",
+        Count:  1,
+        Memory: "24gb",
+    },
+}
+```
+
+From `internal/resources/defaults.go:104-135`
+
+**Available G-series tiers**: `g-micro`, `g-small`, `g-medium`, `g-large`, `g-xlarge`, `g-2xlarge`
+
+### GPU Vendor-Specific
+
+Pupload also supports vendor-specific GPU tiers:
+
+- **GN-series**: NVIDIA GPUs (`gn-small`, `gn-medium`, `gn-large`, `gn-xlarge`, `gn-2xlarge`)
+- **GA-series**: AMD GPUs (`ga-small`, `ga-medium`, `ga-large`, `ga-xlarge`, `ga-2xlarge`)
+- **GI-series**: Intel GPUs (`gi-small`, `gi-medium`, `gi-large`, `gi-xlarge`)
+- **GM-series**: Apple Silicon (`gm-small`, `gm-medium`, `gm-large`, `gm-xlarge`, `gm-2xlarge`)
+
+<Info>
+Vendor-specific tiers ensure your node runs on the correct GPU architecture for optimized performance or compatibility.
+</Info>
+
+## Resource manager
+
+Workers use the `ResourceManager` to track available resources and ensure they don't overcommit:
+
+```go
+type ResourceManager struct {
+    MaxCPU       CPUCore
+    MaxMemoryMB  MemoryMB
+    MaxStorageMB StorageMB
+
+    currMemMB     MemoryMB
+    currStorageMB StorageMB
+
+    gpus []GPUInfo
+
+    log *slog.Logger
+}
+```
+
+From `internal/resources/resources.go:16-27`
+
+### Auto-detection
+
+Workers can auto-detect available resources:
+
+```go
+if cfg.MaxCPU == "auto" {
+    c, err := ghw.CPU()
+    if err != nil {
+        return nil, err
+    }
+    cpu = CPUCore(c.TotalHardwareThreads)
+}
+
+if cfg.MaxMemory == "auto" {
+    memory, err := ghw.Memory()
+    if err != nil {
+        return nil, err
+    }
+
+    mem = MemoryMB(memory.TotalPhysicalBytes / (1024 * 1024))
+}
+```
+
+From `internal/resources/resources.go:52-73`
+
+<Tip>
+Use `"auto"` for `MaxCPU`, `MaxMemory`, and `MaxStorage` in your worker configuration to let Pupload detect available resources automatically.
+</Tip>
+
+## Resource reservation
+
+When a node is scheduled, the resource manager reserves resources:
+
+```go
+func (rm *ResourceManager) Reserve(tierName string) error {
+    resource, ok := StandardTierMap[tierName]
+    if !ok {
+        return fmt.Errorf("tier not found")
+    }
+
+    rm.currMemMB += resource.Memory.Normalize()
+    rm.currStorageMB += resource.Storage.Normalize()
+
+    return nil
+}
+
+func (rm *ResourceManager) Release(tierName string) error {
+    resource, ok := StandardTierMap[tierName]
+    if !ok {
+        return fmt.Errorf("tier not found")
+    }
+
+    rm.currMemMB -= resource.Memory.Normalize()
+    rm.currStorageMB -= resource.Storage.Normalize()
+
+    return nil
+}
+```
+
+From `internal/resources/resources.go:172-194`
+
+## Valid tier calculation
+
+The resource manager determines which tiers a worker can currently handle:
+
+```go
+func (rm *ResourceManager) GetValidTierMap() map[string]int {
+    validTiers := make(map[string]int)
+
+    validMem := rm.MaxMemoryMB - MemoryMB(rm.currMemMB)
+    validStorage := rm.MaxStorageMB - StorageMB(rm.currStorageMB)
+
+    i := 2
+    for name, resource := range StandardTierMap {
+        cpuValid := rm.MaxCPU >= resource.CPU.Normalize()
+        memValid := validMem >= resource.Memory.Normalize()
+        storageValid := validStorage >= resource.Storage.Normalize()
+        gpuValid := resource.GPU == nil
+        for _, gpu := range rm.gpus {
+            gpuValid = gpuValid || ((resource.GPU.Vendor == gpu.vendor || resource.GPU.Vendor == "any") && resource.GPU.Memory.Normalize() <= GPUMemoryMB(gpu.memory))
+        }
+
+        if cpuValid && memValid && storageValid && gpuValid {
+            validTiers[name] = i
+            i++
+        }
+    }
+
+    return validTiers
+}
+```
+
+From `internal/resources/resources.go:196-224`
+
+<Warning>
+If a worker doesn't have sufficient resources for any tier a node requires, the node will remain queued until resources become available or another worker picks it up.
+</Warning>
+
+## Container resource mapping
+
+Resource tiers are translated to Docker container resource constraints:
+
+```go
+func (rm *ResourceManager) GenerateContainerResource(tierName string) (container.Resources, error) {
+    r, ok := StandardTierMap[tierName]
+    if !ok {
+        return container.Resources{}, fmt.Errorf("invalid tier name %s", tierName)
+    }
+
+    var dr []container.DeviceRequest = nil
+    if r.GPU != nil && len(rm.gpus) != 0 {
+        dr = getDeviceRequest(rm.gpus[0])
+    }
+
+    resource := container.Resources{
+        NanoCPUs:          int64(r.CPU.Normalize()),
+        MemoryReservation: int64(r.Memory.Normalize()) * 1024 * 1024,
+        DeviceRequests:    dr,
+    }
+
+    return resource, nil
+}
+```
+
+From `internal/resources/resources.go:226-244`
+
+## Worker configuration
+
+Configure worker resources in your worker config:
+
+```yaml
+Resources:
+  MaxCPU: "auto"      # or specific number like "8"
+  MaxMemory: "auto"   # or specific amount like "16gb"
+  MaxStorage: "auto"  # or specific amount like "100gb"
+  AllowedGPUs: []     # PCIe addresses of allowed GPUs
+```
+
+From worker config defaults at `internal/worker/config/config.go:83-85`
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Nodes" icon="circle-nodes" href="/concepts/nodes">
+    Learn how nodes use resource tiers
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand the controller/worker architecture
+  </Card>
+</CardGroup>

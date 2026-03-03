@@ -1,0 +1,225 @@
+---
+title: pup controller
+description: Manage remote controllers for your Pupload project
+---
+
+## Overview
+
+The `pup controller` command and its subcommands allow you to manage remote controllers. Controllers orchestrate your upload flows and can be used for production deployments.
+
+## Usage
+
+```bash
+pup controller [subcommand]
+```
+
+## Subcommands
+
+- `add` - Add a new controller to your project
+- `list` - List all configured controllers
+- `remove` - Remove a controller from your project
+
+Running `pup controller` without a subcommand displays help information.
+
+---
+
+## pup controller add
+
+Add a new controller to your project configuration.
+
+### Usage
+
+```bash
+pup controller add <name> <url>
+```
+
+### Arguments
+
+<ParamField path="name" type="string" required>
+  A friendly name for the controller. This name is used when pushing your project with `pup push`.
+</ParamField>
+
+<ParamField path="url" type="string" required>
+  The URL of the controller, including protocol and port.
+  
+  Example: `https://controller.example.com:1234`
+</ParamField>
+
+### Examples
+
+#### Add a production controller
+
+<CodeGroup>
+```bash Terminal
+pup controller add production https://prod.example.com:1234
+```
+
+```bash Output
+Controller "production" added (https://prod.example.com:1234)
+```
+</CodeGroup>
+
+#### Add multiple environment controllers
+
+```bash
+pup controller add development http://localhost:1234
+pup controller add staging https://staging.example.com:1234
+pup controller add production https://prod.example.com:1234
+```
+
+<Tip>
+  Use descriptive names like "production", "staging", or "dev" to easily identify controllers when pushing your project.
+</Tip>
+
+---
+
+## pup controller list
+
+List all controllers configured in your project.
+
+### Usage
+
+```bash
+pup controller list
+```
+
+### Examples
+
+#### List configured controllers
+
+<CodeGroup>
+```bash Terminal
+pup controller list
+```
+
+```bash Output
+development    http://localhost:1234
+staging        https://staging.example.com:1234
+production     https://prod.example.com:1234
+```
+</CodeGroup>
+
+#### No controllers configured
+
+<CodeGroup>
+```bash Terminal
+pup controller list
+```
+
+```bash Output
+No controllers configured.
+```
+</CodeGroup>
+
+<Note>
+  The output format is tab-separated with controller name and URL for easy parsing in scripts.
+</Note>
+
+---
+
+## pup controller remove
+
+Remove a controller from your project configuration.
+
+### Usage
+
+```bash
+pup controller remove <name>
+```
+
+### Arguments
+
+<ParamField path="name" type="string" required>
+  The name of the controller to remove. This must match a controller that was previously added.
+</ParamField>
+
+### Examples
+
+#### Remove a controller
+
+<CodeGroup>
+```bash Terminal
+pup controller remove staging
+```
+
+```bash Output
+Controller "staging" removed
+```
+</CodeGroup>
+
+<Warning>
+  Removing a controller only removes it from your local configuration. It does not affect the remote controller or any deployed projects on that controller.
+</Warning>
+
+---
+
+## Complete workflow example
+
+```bash
+# Add a controller
+pup controller add production https://prod.example.com:1234
+
+# Verify it was added
+pup controller list
+
+# Push your project to the controller
+pup push production
+
+# Later, remove the controller if needed
+pup controller remove production
+```
+
+## Controller storage
+
+Controller configurations are stored in your project directory. This means:
+
+- Controllers are project-specific
+- Different projects can have different controller configurations
+- Controller configs are not shared between projects
+
+<Tip>
+  Consider adding controller configurations to your project's documentation or README so team members know which controllers are available.
+</Tip>
+
+## Security considerations
+
+- **URLs**: Use HTTPS for production controllers to ensure secure communication
+- **Authentication**: Some controllers may require authentication tokens or certificates
+- **Network access**: Ensure your network allows connections to the controller URL
+
+## Common patterns
+
+### Development workflow
+
+```bash
+# Use local dev environment for development
+pup dev
+
+# Push to staging for team testing
+pup controller add staging https://staging.internal:1234
+pup push staging
+
+# Deploy to production after approval
+pup controller add production https://prod.example.com:1234
+pup push production
+```
+
+### Multi-region deployment
+
+```bash
+# Configure controllers in different regions
+pup controller add us-east https://us-east.example.com:1234
+pup controller add eu-west https://eu-west.example.com:1234
+pup controller add ap-south https://ap-south.example.com:1234
+
+# Deploy to all regions
+pup push us-east
+pup push eu-west
+pup push ap-south
+```
+
+## Related commands
+
+- [pup push](/cli/push) - Deploy project to a controller
+- [pup init](/cli/init) - Initialize a new project
+- [pup dev](/cli/dev) - Run local development environment

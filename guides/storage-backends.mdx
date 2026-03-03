@@ -1,0 +1,586 @@
+---
+title: Storage backends
+description: Configure and use different storage backends in Pupload for flexible data management
+---
+
+Storage backends (stores) in Pupload handle where data is stored and accessed. Pupload supports multiple storage backend types including S3-compatible object storage and local filesystem storage.
+
+## Overview
+
+Stores provide:
+
+- **Pre-signed URLs**: Secure temporary access to objects
+- **Put operations**: Upload data to storage
+- **Get operations**: Download data from storage
+- **Delete operations**: Remove data when no longer needed
+- **Existence checks**: Verify if objects exist
+
+From internal/models/store.go:21:27:
+
+```go
+type Store interface {
+    PutURL(ctx context.Context, objectName string, expires time.Duration) (*url.URL, error)
+    GetURL(ctx context.Context, objectName string, expires time.Duration) (*url.URL, error)
+    DeleteObject(ctx context.Context, objectName string) error
+    Exists(objectName string) bool
+}
+```
+
+## Store types
+
+Pupload currently supports S3-compatible object storage:
+
+- **`s3`**: Production S3-compatible storage (AWS S3, MinIO, DigitalOcean Spaces, etc.)
+- **`s3local`**: In-memory S3 for local development and testing
+- **`s3fs`**: S3-compatible storage with filesystem mounting
+
+## S3-compatible storage
+
+The most common storage backend for production use.
+
+### Configuration
+
+```yaml
+Stores:
+  - Name: ProductionStore
+    Type: s3
+    Params:
+      Endpoint: s3.amazonaws.com
+      BucketName: my-bucket
+      Location: us-east-1
+      AccessKey: ${AWS_ACCESS_KEY_ID}
+      SecretKey: ${AWS_SECRET_ACCESS_KEY}
+      Secure: true
+```
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `Endpoint` | string | Yes | S3 endpoint URL |
+| `BucketName` | string | Yes | Bucket name to use |
+| `Location` | string | Yes | Bucket region/location |
+| `AccessKey` | string | Yes | Access key ID |
+| `SecretKey` | string | Yes | Secret access key |
+| `Secure` | boolean | No | Use HTTPS (default: true) |
+
+<Tip>
+  Use environment variables for credentials to keep them out of your configuration files.
+</Tip>
+
+### AWS S3 example
+
+```yaml
+Stores:
+  - Name: AwsStore
+    Type: s3
+    Params:
+      Endpoint: s3.amazonaws.com
+      BucketName: pupload-data
+      Location: us-west-2
+      AccessKey: ${AWS_ACCESS_KEY_ID}
+      SecretKey: ${AWS_SECRET_ACCESS_KEY}
+      Secure: true
+```
+
+### MinIO example
+
+```yaml
+Stores:
+  - Name: MinioStore
+    Type: s3
+    Params:
+      Endpoint: minio.example.com:9000
+      BucketName: uploads
+      Location: us-east-1
+      AccessKey: ${MINIO_ACCESS_KEY}
+      SecretKey: ${MINIO_SECRET_KEY}
+      Secure: true
+```
+
+### DigitalOcean Spaces example
+
+```yaml
+Stores:
+  - Name: SpacesStore
+    Type: s3
+    Params:
+      Endpoint: nyc3.digitaloceanspaces.com
+      BucketName: my-space
+      Location: nyc3
+      AccessKey: ${DO_SPACES_KEY}
+      SecretKey: ${DO_SPACES_SECRET}
+      Secure: true
+```
+
+### Cloudflare R2 example
+
+```yaml
+Stores:
+  - Name: R2Store
+    Type: s3
+    Params:
+      Endpoint: ${ACCOUNT_ID}.r2.cloudflarestorage.com
+      BucketName: my-bucket
+      Location: auto
+      AccessKey: ${R2_ACCESS_KEY_ID}
+      SecretKey: ${R2_SECRET_ACCESS_KEY}
+      Secure: true
+```
+
+## Local S3 storage
+
+For development and testing, use the in-memory S3 implementation.
+
+### Configuration
+
+```yaml
+Stores:
+  - Name: TestStore
+    Type: s3local
+    Params:
+      BucketName: test-bucket
+```
+
+<Warning>
+  Local S3 storage is ephemeral. Data is lost when the controller restarts. Use only for development and testing.
+</Warning>
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `BucketName` | string | Yes | Bucket name to create |
+
+### Example usage
+
+From internal/controller/flows/defaults/Flows/test.yaml:3:12:
+
+```yaml
+Stores:
+  - Name: TestStore
+    Type: s3local
+    Params:
+      BucketName: test123
+
+  - Name: FileStore
+    Type: s3fs
+    Params:
+      BucketName: testfs
+      MountPath: /home/seb/data/fsdata
+```
+
+## S3 filesystem storage
+
+Combines S3 compatibility with filesystem mounting.
+
+### Configuration
+
+```yaml
+Stores:
+  - Name: FileStore
+    Type: s3fs
+    Params:
+      BucketName: data-storage
+      MountPath: /mnt/data
+```
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `BucketName` | string | Yes | Bucket name |
+| `MountPath` | string | Yes | Local filesystem path to mount |
+
+<Info>
+  The mount path must exist and be writable by the controller process.
+</Info>
+
+## Implementation details
+
+### S3 store implementation
+
+From internal/stores/s3/s3.go:15:64:
+
+```go
+type S3Store struct {
+    client   *minio.Client
+    location string
+    bucket   string
+}
+
+type S3StoreInput struct {
+    Endpoint   string
+    BucketName string
+    Location   string
+    AccessKey  string
+    SecretKey  string
+    Secure     *bool
+}
+
+func NewS3Store(input S3StoreInput) (*S3Store, error) {
+    if input.Secure == nil {
+        input.Secure = new(bool)
+        *input.Secure = true
+    }
+
+    transport := &http.Transport{
+        Proxy:               http.ProxyFromEnvironment,
+        MaxIdleConns:        200,
+        MaxIdleConnsPerHost: 100,
+        IdleConnTimeout:     90 * time.Second,
+        TLSHandshakeTimeout: 5 * time.Second,
+        TLSClientConfig: &tls.Config{
+            InsecureSkipVerify: false,
+        },
+    }
+
+    minioClient, err := minio.New(input.Endpoint, &minio.Options{
+        Creds:     credentials.NewStaticV4(input.AccessKey, input.SecretKey, ""),
+        Secure:    *input.Secure,
+        Transport: transport,
+    })
+
+    if err != nil {
+        return nil, err
+    }
+
+    return &S3Store{
+        client:   minioClient,
+        location: input.Location,
+        bucket:   input.BucketName,
+    }, nil
+}
+```
+
+### Pre-signed URLs
+
+From internal/stores/s3/s3.go:92:106:
+
+```go
+func (s *S3Store) PutURL(ctx context.Context, objectName string, expires time.Duration) (u *url.URL, err error) {
+    u, err = s.client.PresignedPutObject(ctx, s.bucket, objectName, expires)
+    if err != nil {
+        return nil, fmt.Errorf("s3 store at %q (bucket %q): %w", s.client.EndpointURL().Host, s.bucket, err)
+    }
+    return u, nil
+}
+
+func (s *S3Store) GetURL(ctx context.Context, objectName string, expires time.Duration) (u *url.URL, err error) {
+    u, err = s.client.PresignedGetObject(ctx, s.bucket, objectName, expires, url.Values{})
+    if err != nil {
+        return nil, fmt.Errorf("s3 store at %q (bucket %q): %w", s.client.EndpointURL().Host, s.bucket, err)
+    }
+    return u, nil
+}
+```
+
+Pupload uses pre-signed URLs to grant temporary access to objects without sharing credentials.
+
+## Using stores in flows
+
+### Define stores
+
+First, declare the stores your flow will use:
+
+```yaml
+Stores:
+  - Name: InputStore
+    Type: s3
+    Params:
+      Endpoint: s3.amazonaws.com
+      BucketName: raw-data
+      Location: us-east-1
+      AccessKey: ${AWS_ACCESS_KEY_ID}
+      SecretKey: ${AWS_SECRET_ACCESS_KEY}
+  
+  - Name: OutputStore
+    Type: s3
+    Params:
+      Endpoint: s3.amazonaws.com
+      BucketName: processed-data
+      Location: us-east-1
+      AccessKey: ${AWS_ACCESS_KEY_ID}
+      SecretKey: ${AWS_SECRET_ACCESS_KEY}
+```
+
+### Set default store
+
+Specify which store to use by default:
+
+```yaml
+DefaultStore: InputStore
+```
+
+### Configure data wells
+
+Connect stores to edges using data wells:
+
+```yaml
+DataWells:
+  - Store: InputStore
+    Edge: raw_input
+    Type: dynamic
+  
+  - Store: OutputStore
+    Edge: final_output
+    Type: dynamic
+```
+
+From internal/models/well.go:3:15:
+
+```go
+// Defines where data should be sourced from, stored, and outputted to on a given edge
+type DataWell struct {
+    Edge  string // Edge name
+    Store string // Store name
+
+    Source   *string           // Where we're sourcing data from on input: upload, webhook, static, etc.
+    Key      *string           // defaults to artifact id. ${RUN_ID}, ${ARTIFACT_ID}, ${EDGE_ID}
+    Lifetime *DataWellLifetime // how long the data on that edge should live for
+}
+```
+
+## Complete flow example
+
+```yaml
+Name: multiStoreProcessing
+
+Stores:
+  # Fast temporary storage for intermediate data
+  - Name: TempStore
+    Type: s3local
+    Params:
+      BucketName: temp-processing
+  
+  # Long-term input storage
+  - Name: InputArchive
+    Type: s3
+    Params:
+      Endpoint: s3.amazonaws.com
+      BucketName: input-archive
+      Location: us-west-2
+      AccessKey: ${AWS_ACCESS_KEY_ID}
+      SecretKey: ${AWS_SECRET_ACCESS_KEY}
+  
+  # Long-term output storage
+  - Name: OutputArchive
+    Type: s3
+    Params:
+      Endpoint: s3.amazonaws.com
+      BucketName: output-archive
+      Location: us-west-2
+      AccessKey: ${AWS_ACCESS_KEY_ID}
+      SecretKey: ${AWS_SECRET_ACCESS_KEY}
+
+DefaultStore: TempStore
+
+DataWells:
+  # Input from archive
+  - Store: InputArchive
+    Edge: source_data
+  
+  # Temporary intermediate data
+  - Store: TempStore
+    Edge: temp_processed
+  
+  # Final output to archive
+  - Store: OutputArchive
+    Edge: archived_output
+
+Nodes:
+  - ID: initial-processing
+    DefName: github.com/myorg/processor
+    Inputs:
+      - Name: RawData
+        Edge: source_data
+    Outputs:
+      - Name: ProcessedData
+        Edge: temp_processed
+    Command: Process
+  
+  - ID: final-archival
+    DefName: github.com/myorg/archiver
+    Inputs:
+      - Name: Data
+        Edge: temp_processed
+    Outputs:
+      - Name: ArchivedData
+        Edge: archived_output
+    Command: Archive
+```
+
+## Controller storage configuration
+
+The controller itself needs storage for operational data.
+
+From internal/controller/config/config.go:14:24:
+
+```go
+type ControllerConfig struct {
+    SyncPlane syncplane.SyncPlaneSettings
+    Telemetry telemetry.TelemetrySettings
+
+    ProjectRepo projects.RedisProjectRepoConfig
+    RuntimeRepo repo.RuntimeRepoSettings
+
+    Storage struct {
+        DataPath string
+    }
+}
+```
+
+Configure in your controller config file:
+
+```yaml
+Storage:
+  DataPath: /var/lib/pupload/data
+```
+
+## Store selection strategy
+
+<Tabs>
+  <Tab title="By performance">
+    **Fast access** (s3local, s3fs with local mount):
+    - Temporary processing data
+    - Frequently accessed objects
+    - Development and testing
+
+    **Standard access** (S3):
+    - Production workloads
+    - Long-term storage
+    - Archive storage
+  </Tab>
+
+  <Tab title="By durability">
+    **Ephemeral** (s3local):
+    - Development
+    - Testing
+    - Temporary data
+
+    **Durable** (S3, s3fs):
+    - Production data
+    - Important inputs/outputs
+    - Long-term archives
+  </Tab>
+
+  <Tab title="By cost">
+    **Low cost** (s3local):
+    - Free (uses memory)
+    - Development only
+
+    **Standard cost** (S3):
+    - Pay for storage and operations
+    - Choose appropriate storage class
+    - Use lifecycle policies
+  </Tab>
+</Tabs>
+
+## Best practices
+
+<Tip>
+  Follow these guidelines for effective storage backend usage:
+</Tip>
+
+1. **Use environment variables**: Never hardcode credentials
+2. **Separate concerns**: Use different buckets for inputs, outputs, and temporary data
+3. **Choose appropriate regions**: Co-locate storage with compute when possible
+4. **Enable secure connections**: Always use `Secure: true` in production
+5. **Set bucket policies**: Configure appropriate IAM policies and bucket permissions
+6. **Monitor costs**: Track storage usage and API call costs
+7. **Use lifecycle policies**: Automatically expire temporary data
+8. **Test with s3local**: Develop and test without cloud costs
+9. **Implement retries**: Handle transient storage failures gracefully
+10. **Version your buckets**: Enable versioning for critical data
+
+## Security considerations
+
+### Credential management
+
+<Warning>
+  Never commit credentials to version control. Use environment variables or secret management systems.
+</Warning>
+
+```yaml
+# Good: Use environment variables
+Params:
+  AccessKey: ${AWS_ACCESS_KEY_ID}
+  SecretKey: ${AWS_SECRET_ACCESS_KEY}
+
+# Bad: Hardcoded credentials
+Params:
+  AccessKey: AKIAIOSFODNN7EXAMPLE
+  SecretKey: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+```
+
+### Bucket permissions
+
+Ensure your access keys have appropriate permissions:
+
+- `s3:GetObject` - Read objects
+- `s3:PutObject` - Write objects
+- `s3:DeleteObject` - Delete objects
+- `s3:ListBucket` - List bucket contents
+
+### Network security
+
+Always use secure connections in production:
+
+```yaml
+Params:
+  Secure: true  # Use HTTPS
+```
+
+### Pre-signed URL expiration
+
+Pupload generates temporary pre-signed URLs with limited lifetimes. This ensures URLs cannot be reused indefinitely.
+
+## Troubleshooting
+
+### Connection errors
+
+**Problem**: Cannot connect to S3 endpoint
+
+**Solutions**:
+- Verify endpoint URL is correct
+- Check network connectivity
+- Ensure firewall rules allow outbound HTTPS
+- Verify SSL certificates are valid
+
+### Authentication errors
+
+**Problem**: Access denied or invalid credentials
+
+**Solutions**:
+- Verify access key and secret key are correct
+- Check IAM permissions
+- Ensure bucket exists and is accessible
+- Verify bucket region matches configuration
+
+### Bucket not found
+
+**Problem**: The specified bucket does not exist
+
+**Solutions**:
+- Create the bucket before running flows
+- Verify bucket name spelling
+- Check bucket region
+- Ensure access key has permission to access the bucket
+
+### Slow performance
+
+**Problem**: Storage operations are slow
+
+**Solutions**:
+- Choose a region closer to your workers
+- Use s3local for development
+- Enable transfer acceleration (AWS S3)
+- Check network latency
+- Consider using s3fs with local caching
+
+## Next steps
+
+- Use storage backends in your [flows](/guides/creating-flows)
+- Create [custom nodes](/guides/custom-nodes) that work with stores
+- Understand [resource tiers](/guides/resource-tiers) for optimal performance
+- Deploy your infrastructure with the [deployment guide](/guides/deployment)

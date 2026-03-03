@@ -1,0 +1,693 @@
+---
+title: Flow YAML schema
+description: Complete reference for defining Pupload processing flows
+---
+
+Flows are YAML files that define processing pipelines. Each flow specifies nodes (processing steps), edges (data connections), stores (storage backends), and datawells (input/output configuration).
+
+## Basic example
+
+```yaml
+Name: image-resize
+
+Stores:
+  - Name: MainStorage
+    Type: s3
+    Params:
+      BucketName: uploads
+      Region: us-east-1
+
+DefaultStore: MainStorage
+
+DataWells:
+  - Store: MainStorage
+    Edge: input-image
+    Source: upload
+
+Nodes:
+  - ID: resize
+    Uses: docker.io/mycompany/image-processor:latest
+    Inputs:
+      - Name: ImageIn
+        Edge: input-image
+    Outputs:
+      - Name: ImageOut
+        Edge: resized-image
+    Flags:
+      - Name: width
+        Value: "800"
+      - Name: height
+        Value: "600"
+    Command: resize
+```
+
+## Schema reference
+
+### Flow
+
+Top-level flow definition.
+
+<ParamField path="Name" type="string" required>
+  Unique identifier for this flow. Used when triggering flows via API or CLI.
+  
+  ```yaml
+  Name: video-transcode
+  ```
+</ParamField>
+
+<ParamField path="Timeout" type="string">
+  Maximum duration for the entire flow execution. Uses Go duration format.
+  
+  ```yaml
+  Timeout: 30m
+  ```
+  
+  Examples: `5m`, `1h`, `30s`, `2h30m`
+</ParamField>
+
+### Stores
+
+Define storage backends for flow artifacts.
+
+<ParamField path="Stores" type="array" required>
+  List of storage backends available to this flow.
+</ParamField>
+
+<ParamField path="Stores[].Name" type="string" required>
+  Unique name for this store within the flow.
+  
+  ```yaml
+  Stores:
+    - Name: InputStorage
+    - Name: OutputStorage
+  ```
+</ParamField>
+
+<ParamField path="Stores[].Type" type="string" required>
+  Store type implementation:
+  - `s3` - Amazon S3 or S3-compatible storage
+  - `s3local` - Local S3-compatible mock (for testing)
+  - `s3fs` - S3 with local filesystem fallback
+  - `gcs` - Google Cloud Storage
+  - `azure` - Azure Blob Storage
+  
+  ```yaml
+  Stores:
+    - Name: Production
+      Type: s3
+  ```
+</ParamField>
+
+<ParamField path="Stores[].Params" type="object" required>
+  Store-specific configuration parameters. Structure varies by store type.
+</ParamField>
+
+<Tabs>
+  <Tab title="S3 params">
+    ```yaml
+    Stores:
+      - Name: S3Storage
+        Type: s3
+        Params:
+          BucketName: my-bucket
+          Region: us-east-1
+          Endpoint: s3.amazonaws.com  # Optional
+          AccessKeyID: AKIA...         # Optional
+          SecretAccessKey: secret     # Optional
+    ```
+    
+    <Note>
+    If `AccessKeyID` and `SecretAccessKey` are omitted, uses IAM role credentials.
+    </Note>
+  </Tab>
+  
+  <Tab title="S3 local params">
+    ```yaml
+    Stores:
+      - Name: LocalS3
+        Type: s3local
+        Params:
+          BucketName: test-bucket
+          Endpoint: localhost:9000
+    ```
+    
+    Used for testing with MinIO or LocalStack.
+  </Tab>
+  
+  <Tab title="S3 filesystem params">
+    ```yaml
+    Stores:
+      - Name: FileStore
+        Type: s3fs
+        Params:
+          BucketName: virtual-bucket
+          MountPath: /data/uploads
+    ```
+    
+    Useful for development or when direct filesystem access is needed.
+  </Tab>
+  
+  <Tab title="GCS params">
+    ```yaml
+    Stores:
+      - Name: GCSStorage
+        Type: gcs
+        Params:
+          BucketName: my-gcs-bucket
+          ProjectID: my-project
+          CredentialsFile: /path/to/credentials.json
+    ```
+  </Tab>
+</Tabs>
+
+<ParamField path="DefaultStore" type="string">
+  Name of the default store to use for artifacts when not explicitly specified in datawells.
+  
+  ```yaml
+  DefaultStore: MainStorage
+  ```
+</ParamField>
+
+### DataWells
+
+Define where data enters, lives during processing, and exits the flow.
+
+<ParamField path="DataWells" type="array">
+  Configuration for data sources and sinks.
+</ParamField>
+
+<ParamField path="DataWells[].Edge" type="string" required>
+  Name of the edge this datawell provides data for or stores data from.
+  
+  ```yaml
+  DataWells:
+    - Edge: user-upload
+    - Edge: final-output
+  ```
+</ParamField>
+
+<ParamField path="DataWells[].Store" type="string" required>
+  Name of the store to use for this datawell. Must reference a store defined in `Stores`.
+  
+  ```yaml
+  DataWells:
+    - Edge: input
+      Store: InputStorage
+  ```
+</ParamField>
+
+<ParamField path="DataWells[].Source" type="string">
+  How data enters this edge. Used for input datawells:
+  - `upload` - Data comes from user upload via API
+  - `webhook` - Data comes from webhook trigger
+  - `static` - Data is pre-populated in storage
+  
+  ```yaml
+  DataWells:
+    - Edge: input-image
+      Store: Uploads
+      Source: upload
+  ```
+</ParamField>
+
+<ParamField path="DataWells[].Key" type="string">
+  Storage key pattern for artifacts on this edge. Supports template variables:
+  - `${RUN_ID}` - Unique flow execution ID
+  - `${ARTIFACT_ID}` - Unique artifact ID
+  - `${EDGE_ID}` - Edge name
+  
+  ```yaml
+  DataWells:
+    - Edge: output
+      Store: Results
+      Key: "results/${RUN_ID}/${ARTIFACT_ID}"
+  ```
+  
+  If not specified, defaults to `${ARTIFACT_ID}`.
+</ParamField>
+
+<ParamField path="DataWells[].Lifetime" type="object">
+  How long artifacts on this edge should be retained (future feature).
+</ParamField>
+
+### Nodes
+
+Define processing steps that execute in containers.
+
+<ParamField path="Nodes" type="array" required>
+  List of processing nodes in this flow.
+</ParamField>
+
+<ParamField path="Nodes[].ID" type="string" required>
+  Unique identifier for this node within the flow.
+  
+  ```yaml
+  Nodes:
+    - ID: resize
+    - ID: watermark
+    - ID: upload-cdn
+  ```
+</ParamField>
+
+<ParamField path="Nodes[].Uses" type="string" required>
+  Container image to execute for this node. Supports:
+  - Docker Hub: `username/image:tag`
+  - Full registry: `ghcr.io/org/image:tag`
+  - Implicit Docker Hub: `library/alpine:latest`
+  
+  ```yaml
+  Nodes:
+    - ID: process
+      Uses: mycompany/processor:v1.0
+    - ID: ffmpeg
+      Uses: linuxserver/ffmpeg:latest
+  ```
+  
+  <Warning>
+  Ensure the image is allowed by worker security configuration.
+  </Warning>
+</ParamField>
+
+<ParamField path="Nodes[].Inputs" type="array">
+  Input artifacts this node consumes.
+</ParamField>
+
+<ParamField path="Nodes[].Inputs[].Name" type="string" required>
+  Name of the input as expected by the container. Exposed as environment variable `${Name}_URL` containing a presigned download URL.
+  
+  ```yaml
+  Inputs:
+    - Name: VideoStream
+      Edge: input-video
+  ```
+  
+  The container receives: `VIDEOSTREAM_URL=https://s3.../presigned-url`
+</ParamField>
+
+<ParamField path="Nodes[].Inputs[].Edge" type="string" required>
+  Name of the edge to read input data from. Must be produced by a datawell or another node's output.
+  
+  ```yaml
+  Inputs:
+    - Name: ImageIn
+      Edge: uploaded-image
+  ```
+</ParamField>
+
+<ParamField path="Nodes[].Outputs" type="array">
+  Output artifacts this node produces.
+</ParamField>
+
+<ParamField path="Nodes[].Outputs[].Name" type="string" required>
+  Name of the output as produced by the container. Exposed as environment variable `${Name}_URL` containing a presigned upload URL.
+  
+  ```yaml
+  Outputs:
+    - Name: VideoOut
+      Edge: compressed-video
+  ```
+  
+  The container receives: `VIDEOOUT_URL=https://s3.../presigned-upload-url`
+  
+  <Note>
+  The container must upload the result to this URL upon completion.
+  </Note>
+</ParamField>
+
+<ParamField path="Nodes[].Outputs[].Edge" type="string" required>
+  Name of the edge to write output data to. Can be consumed by other nodes or output datawells.
+  
+  ```yaml
+  Outputs:
+    - Name: Processed
+      Edge: processed-data
+  ```
+</ParamField>
+
+<ParamField path="Nodes[].Flags" type="array">
+  Configuration flags passed to the container as environment variables.
+</ParamField>
+
+<ParamField path="Nodes[].Flags[].Name" type="string" required>
+  Flag name. Exposed as environment variable.
+  
+  ```yaml
+  Flags:
+    - Name: quality
+      Value: "high"
+    - Name: format
+      Value: "mp4"
+  ```
+  
+  The container receives: `QUALITY=high` and `FORMAT=mp4`
+</ParamField>
+
+<ParamField path="Nodes[].Flags[].Value" type="string" required>
+  Flag value. Must be a string.
+  
+  ```yaml
+  Flags:
+    - Name: width
+      Value: "1920"
+    - Name: height
+      Value: "1080"
+  ```
+</ParamField>
+
+<ParamField path="Nodes[].Command" type="string">
+  Command to execute within the container. If not specified, uses the container's default entrypoint.
+  
+  ```yaml
+  Nodes:
+    - ID: encode
+      Uses: linuxserver/ffmpeg
+      Command: encode-hd
+  ```
+</ParamField>
+
+## Complete examples
+
+<Tabs>
+  <Tab title="Image processing">
+    ```yaml
+    Name: image-pipeline
+    
+    Timeout: 10m
+    
+    Stores:
+      - Name: Uploads
+        Type: s3
+        Params:
+          BucketName: user-uploads
+          Region: us-east-1
+      
+      - Name: CDN
+        Type: s3
+        Params:
+          BucketName: cdn-assets
+          Region: us-east-1
+    
+    DefaultStore: Uploads
+    
+    DataWells:
+      - Edge: raw-upload
+        Store: Uploads
+        Source: upload
+      
+      - Edge: cdn-output
+        Store: CDN
+        Key: "images/${RUN_ID}/final.jpg"
+    
+    Nodes:
+      - ID: resize
+        Uses: mycompany/image-resizer:v2.0
+        Inputs:
+          - Name: OriginalImage
+            Edge: raw-upload
+        Outputs:
+          - Name: ResizedImage
+            Edge: resized
+        Flags:
+          - Name: width
+            Value: "1200"
+          - Name: height
+            Value: "800"
+          - Name: quality
+            Value: "85"
+      
+      - ID: watermark
+        Uses: mycompany/watermarker:v1.5
+        Inputs:
+          - Name: InputImage
+            Edge: resized
+        Outputs:
+          - Name: WatermarkedImage
+            Edge: cdn-output
+        Flags:
+          - Name: position
+            Value: "bottom-right"
+          - Name: opacity
+            Value: "0.7"
+    ```
+  </Tab>
+  
+  <Tab title="Video transcoding">
+    ```yaml
+    Name: video-transcode
+    
+    Timeout: 2h
+    
+    Stores:
+      - Name: RawVideo
+        Type: s3
+        Params:
+          BucketName: raw-videos
+          Region: us-west-2
+      
+      - Name: Processed
+        Type: s3
+        Params:
+          BucketName: processed-videos
+          Region: us-west-2
+    
+    DefaultStore: Processed
+    
+    DataWells:
+      - Edge: uploaded-video
+        Store: RawVideo
+        Source: upload
+      
+      - Edge: hd-output
+        Store: Processed
+        Key: "videos/${RUN_ID}/hd.mp4"
+      
+      - Edge: sd-output
+        Store: Processed
+        Key: "videos/${RUN_ID}/sd.mp4"
+    
+    Nodes:
+      - ID: extract-audio
+        Uses: linuxserver/ffmpeg:latest
+        Inputs:
+          - Name: VideoStream
+            Edge: uploaded-video
+        Outputs:
+          - Name: AudioStream
+            Edge: audio-track
+        Command: extract-audio
+      
+      - ID: transcode-hd
+        Uses: mycompany/gpu-encoder:v3.0
+        Inputs:
+          - Name: SourceVideo
+            Edge: uploaded-video
+        Outputs:
+          - Name: EncodedVideo
+            Edge: hd-output
+        Flags:
+          - Name: codec
+            Value: "h264"
+          - Name: bitrate
+            Value: "5000k"
+          - Name: resolution
+            Value: "1920x1080"
+        Command: encode
+      
+      - ID: transcode-sd
+        Uses: mycompany/gpu-encoder:v3.0
+        Inputs:
+          - Name: SourceVideo
+            Edge: uploaded-video
+        Outputs:
+          - Name: EncodedVideo
+            Edge: sd-output
+        Flags:
+          - Name: codec
+            Value: "h264"
+          - Name: bitrate
+            Value: "1500k"
+          - Name: resolution
+            Value: "854x480"
+        Command: encode
+    ```
+    
+    <Note>
+    The `transcode-hd` and `transcode-sd` nodes run in parallel since they both depend only on `uploaded-video`.
+    </Note>
+  </Tab>
+  
+  <Tab title="ML inference">
+    ```yaml
+    Name: ml-inference
+    
+    Stores:
+      - Name: Storage
+        Type: s3
+        Params:
+          BucketName: ml-inference
+          Region: us-east-1
+    
+    DefaultStore: Storage
+    
+    DataWells:
+      - Edge: input-data
+        Store: Storage
+        Source: upload
+      
+      - Edge: results
+        Store: Storage
+        Key: "results/${RUN_ID}/output.json"
+    
+    Nodes:
+      - ID: preprocess
+        Uses: mycompany/preprocessor:v1.0
+        Inputs:
+          - Name: RawData
+            Edge: input-data
+        Outputs:
+          - Name: ProcessedData
+            Edge: preprocessed
+      
+      - ID: inference
+        Uses: mycompany/ml-model:v2.5
+        Inputs:
+          - Name: ModelInput
+            Edge: preprocessed
+        Outputs:
+          - Name: ModelOutput
+            Edge: predictions
+        Flags:
+          - Name: model_path
+            Value: "/models/production.onnx"
+          - Name: batch_size
+            Value: "32"
+      
+      - ID: postprocess
+        Uses: mycompany/postprocessor:v1.0
+        Inputs:
+          - Name: Predictions
+            Edge: predictions
+        Outputs:
+          - Name: FinalResults
+            Edge: results
+        Flags:
+          - Name: format
+            Value: "json"
+    ```
+  </Tab>
+  
+  <Tab title="Document processing">
+    ```yaml
+    Name: document-pipeline
+    
+    Stores:
+      - Name: Documents
+        Type: s3
+        Params:
+          BucketName: documents
+          Region: eu-west-1
+    
+    DefaultStore: Documents
+    
+    DataWells:
+      - Edge: uploaded-pdf
+        Store: Documents
+        Source: upload
+      
+      - Edge: searchable-pdf
+        Store: Documents
+        Key: "processed/${RUN_ID}/searchable.pdf"
+    
+    Nodes:
+      - ID: extract-images
+        Uses: mycompany/pdf-tools:v1.0
+        Inputs:
+          - Name: PDFFile
+            Edge: uploaded-pdf
+        Outputs:
+          - Name: ImageArchive
+            Edge: pdf-images
+        Command: extract-images
+      
+      - ID: ocr
+        Uses: mycompany/ocr-engine:v2.0
+        Inputs:
+          - Name: Images
+            Edge: pdf-images
+        Outputs:
+          - Name: OCRText
+            Edge: extracted-text
+        Flags:
+          - Name: language
+            Value: "eng"
+          - Name: dpi
+            Value: "300"
+      
+      - ID: rebuild-pdf
+        Uses: mycompany/pdf-tools:v1.0
+        Inputs:
+          - Name: OriginalPDF
+            Edge: uploaded-pdf
+          - Name: TextLayer
+            Edge: extracted-text
+        Outputs:
+          - Name: SearchablePDF
+            Edge: searchable-pdf
+        Command: add-text-layer
+    ```
+  </Tab>
+</Tabs>
+
+## Flow validation
+
+Pupload validates flows before execution:
+
+<Steps>
+  <Step title="DAG validation">
+    Ensures the flow forms a directed acyclic graph with no cycles.
+  </Step>
+  
+  <Step title="Edge validation">
+    Verifies all edge references are valid:
+    - Input edges must be produced by datawells or other nodes
+    - Output edges must be consumed by nodes or output datawells
+  </Step>
+  
+  <Step title="Store validation">
+    Confirms all store references exist and are properly configured.
+  </Step>
+  
+  <Step title="Resource validation">
+    Checks that required resource tiers are available in the worker pool.
+  </Step>
+</Steps>
+
+<Warning>
+Flows with validation errors will be rejected at creation time.
+</Warning>
+
+## Testing flows
+
+Test flows locally before deploying:
+
+```bash
+# Test with mock S3
+pup test image-pipeline --input raw-upload=./test.jpg --mocks3
+
+# Test with real S3
+pup test video-transcode --input uploaded-video=./video.mp4
+
+# Test with specific controller
+pup test ml-inference --input input-data=./data.json --controller localhost:8080
+```
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Controller configuration" icon="brain" href="/configuration/controller">
+    Configure the controller
+  </Card>
+  <Card title="Worker configuration" icon="server" href="/configuration/worker">
+    Configure workers
+  </Card>
+</CardGroup>

@@ -1,0 +1,196 @@
+---
+title: Flows
+description: Learn how flows orchestrate data processing pipelines in Pupload
+---
+
+## What are flows?
+
+Flows are the core orchestration unit in Pupload. A flow defines a complete data processing pipeline by connecting nodes together, configuring storage backends, and managing data movement between processing steps.
+
+Each flow is defined in YAML and consists of:
+- **Nodes**: Processing units that transform data
+- **Stores**: Storage backends for input and output data
+- **DataWells**: Data sources and destinations that connect flows to external data
+- **Configuration**: Timeout settings and execution parameters
+
+## Flow structure
+
+A flow is represented by the `Flow` struct in the codebase:
+
+```go
+type Flow struct {
+    Name string
+
+    Timeout *string
+
+    Stores          []StoreInput
+    DefaultDataWell *DataWell
+    DataWells       []DataWell
+    Nodes           []Node
+}
+```
+
+From `internal/models/flow.go:3-12`
+
+## Example flow definition
+
+Here's a real example from the Pupload test suite:
+
+```yaml
+Name: testFlow
+
+Stores:
+  - Name: TestStore
+    Type: s3local
+    Params:
+      BucketName: test123
+
+  - Name: FileStore
+    Type: s3fs
+    Params:
+      BucketName: testfs
+      MountPath: /home/seb/data/fsdata
+      
+DefaultStore: FileStore
+
+AvailableNodes:
+  - github.com/pupload/pupload/ffmpeg
+
+DataWells:
+  - Store: FileStore
+    Edge: teststore_input
+    Type: dynamic
+
+
+Nodes:
+  - ID: 0
+    DefName: github.com/pupload/pupload/ffmpeg
+    Inputs:
+      - Name: VideoStream
+        Edge: teststore_input
+
+    Outputs:
+      - Name: VideoOut
+        Edge: compressed_vids
+
+    Flags: 
+      - Name: Flag
+        Value: Test123
+        
+    Command: Encode
+```
+
+From `internal/controller/flows/defaults/Flows/test.yaml:1-42`
+
+<Note>
+This example demonstrates a video encoding flow that reads input from a datawell, processes it through an FFmpeg node, and outputs the result to a different edge.
+</Note>
+
+## Flow execution lifecycle
+
+Flows go through several states during execution:
+
+1. **FLOWRUN_STOPPED**: Initial state before execution begins
+2. **FLOWRUN_WAITING**: Waiting for input data or node availability
+3. **FLOWRUN_RUNNING**: Actively executing nodes
+4. **FLOWRUN_COMPLETE**: All nodes finished successfully
+5. **FLOWRUN_ERROR**: Execution failed
+
+The controller manages flow execution through a state machine:
+
+```go
+switch rt.FlowRun.Status {
+case models.FLOWRUN_STOPPED:
+
+case models.FLOWRUN_WAITING:
+    rt.updateWaiting()
+    rt.updateAllNodes()
+
+    if len(rt.nodesReady()) == 0 {
+        return
+    }
+
+    rt.FlowRun.Status = models.FLOWRUN_RUNNING
+
+case models.FLOWRUN_RUNNING:
+    for _, nodeID := range rt.nodesReady() {
+        if err := rt.handleExecuteNode(ctx, nodeID, s); err != nil {
+            rt.log.Error("error executing node", "err", err, "node_id", nodeID)
+            rt.FlowRun.Status = models.FLOWRUN_ERROR
+            return
+        }
+
+        rt.FlowRun.NodeState[nodeID] = models.NodeState{Status: models.NODERUN_RUNNING, Logs: rt.FlowRun.NodeState[nodeID].Logs}
+    }
+
+    rt.FlowRun.Status = models.FLOWRUN_WAITING
+```
+
+From `internal/controller/flows/runtime/step.go:32-58`
+
+## Flow timeouts
+
+Flows can specify a timeout duration. If the flow doesn't complete within the specified time, it will be marked as errored:
+
+```go
+func (rt *RuntimeFlow) IsTimedOut() bool {
+    if rt.Flow.Timeout == nil {
+        return false
+    }
+
+    timeout, err := time.ParseDuration(*rt.Flow.Timeout)
+    if err != nil {
+        rt.log.Warn("invalid timeout duration", "timeout", *rt.Flow.Timeout, "err", err)
+        return false
+    }
+
+    if rt.FlowRun.StartedAt.IsZero() {
+        return false
+    }
+
+    return time.Since(rt.FlowRun.StartedAt) > timeout
+}
+```
+
+From `internal/controller/flows/runtime/step.go:70-86`
+
+<Warning>
+Set appropriate timeouts for your flows. Long-running flows without timeouts can consume resources indefinitely if they encounter issues.
+</Warning>
+
+## DataWells in flows
+
+DataWells define how data enters and exits your flow. They connect specific edges (data connection points) to storage backends:
+
+```go
+type DataWell struct {
+    Edge  string // Edge name
+    Store string // Store name
+
+    Source   *string           // Where we're sourcing data from on input: upload, webhook, static, etc.
+    Key      *string           // defaults to artifact id. ${RUN_ID}, ${ARTIFACT_ID}, ${EDGE_ID}
+    Lifetime *DataWellLifetime // how long the data on that edge should live for
+}
+```
+
+From `internal/models/well.go:4-11`
+
+DataWells support multiple source types:
+- **upload**: Generate presigned URLs for users to upload data
+- **static**: Reference existing objects in storage
+- **webhook**: (Future) Trigger flows from external webhooks
+
+<Tip>
+Use DataWell key templates with variables like `${RUN_ID}`, `${FLOW_NAME}`, `${TIMESTAMP}` to organize your stored artifacts automatically.
+</Tip>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Nodes" icon="circle-nodes" href="/concepts/nodes">
+    Learn how nodes process data within flows
+  </Card>
+  <Card title="Stores" icon="database" href="/concepts/stores">
+    Understand storage backends for your data
+  </Card>
+</CardGroup>

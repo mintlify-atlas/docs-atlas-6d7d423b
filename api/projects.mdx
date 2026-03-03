@@ -1,0 +1,304 @@
+---
+title: Project endpoints
+description: Manage projects and execute saved flows using the Project API
+---
+
+The Project API allows you to retrieve, save, and execute flows within projects. Projects are containers for multiple flows and shared node definitions.
+
+## Get project
+
+```http
+GET /api/v1/project/{projectID}
+```
+
+Retrieve a project by its unique identifier.
+
+### Path parameters
+
+<ParamField path="projectID" type="string" required>
+  UUID of the project to retrieve
+</ParamField>
+
+### Response
+
+<ResponseField name="ID" type="string">
+  UUID of the project
+</ResponseField>
+
+<ResponseField name="Flows" type="array">
+  Array of flow definitions in the project
+  
+  <Expandable title="Flow properties">
+    <ResponseField name="Name" type="string">
+      Name of the flow
+    </ResponseField>
+    
+    <ResponseField name="Timeout" type="string">
+      Timeout duration for the flow
+    </ResponseField>
+    
+    <ResponseField name="Stores" type="array">
+      Storage configurations
+    </ResponseField>
+    
+    <ResponseField name="Nodes" type="array">
+      Array of nodes in the flow
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="NodeDefs" type="array">
+  Array of node definitions available to all flows in the project
+</ResponseField>
+
+<ResponseField name="GlobalStores" type="array">
+  Array of global store configurations shared across flows
+</ResponseField>
+
+### Example request
+
+```bash
+curl http://localhost:1234/api/v1/project/550e8400-e29b-41d4-a716-446655440000
+```
+
+### Example response
+
+```json
+{
+  "ID": "550e8400-e29b-41d4-a716-446655440000",
+  "Flows": [
+    {
+      "Name": "image-processing",
+      "Timeout": "10m",
+      "Nodes": [
+        {
+          "ID": "resize-1",
+          "Uses": "pupload/resize",
+          "Flags": [{"Name": "width", "Value": "1024"}]
+        }
+      ]
+    }
+  ],
+  "NodeDefs": [
+    {
+      "Publisher": "pupload",
+      "Name": "resize",
+      "Image": "pupload/resize:latest",
+      "Tier": "c-small",
+      "MaxAttempts": 3
+    }
+  ],
+  "GlobalStores": []
+}
+```
+
+### Error responses
+
+<ResponseField name="400" type="error">
+  Invalid project ID format
+</ResponseField>
+
+<ResponseField name="404" type="error">
+  Project not found
+</ResponseField>
+
+---
+
+## Save project
+
+```http
+POST /api/v1/project/{projectID}
+```
+
+Save or update a project. The project ID in the URL must match the ID in the request body.
+
+### Path parameters
+
+<ParamField path="projectID" type="string" required>
+  UUID of the project to save
+</ParamField>
+
+### Request body
+
+<ParamField body="ID" type="string" required>
+  UUID of the project (must match path parameter)
+</ParamField>
+
+<ParamField body="Flows" type="array" required>
+  Array of flow definitions to save in the project
+</ParamField>
+
+<ParamField body="NodeDefs" type="array" required>
+  Array of node definitions
+</ParamField>
+
+<ParamField body="GlobalStores" type="array">
+  Array of global store configurations
+</ParamField>
+
+### Response
+
+Returns HTTP `200` status code on success with no response body.
+
+### Example request
+
+```bash
+curl -X POST http://localhost:1234/api/v1/project/550e8400-e29b-41d4-a716-446655440000 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ID": "550e8400-e29b-41d4-a716-446655440000",
+    "Flows": [
+      {
+        "Name": "video-transcoding",
+        "Nodes": [
+          {
+            "ID": "transcode-1",
+            "Uses": "pupload/ffmpeg",
+            "Flags": [
+              {"Name": "format", "Value": "mp4"},
+              {"Name": "codec", "Value": "h264"}
+            ]
+          }
+        ]
+      }
+    ],
+    "NodeDefs": [
+      {
+        "Publisher": "pupload",
+        "Name": "ffmpeg",
+        "Image": "pupload/ffmpeg:latest",
+        "Tier": "c-medium",
+        "MaxAttempts": 2
+      }
+    ],
+    "GlobalStores": []
+  }'
+```
+
+### Error responses
+
+<ResponseField name="400" type="error">
+  Invalid input or project ID mismatch
+</ResponseField>
+
+<ResponseField name="500" type="error">
+  Failed to save project
+</ResponseField>
+
+---
+
+## Execute project flow
+
+```http
+POST /api/v1/project/{projectID}/flows/{flowName}
+```
+
+Execute a specific flow within a project by name.
+
+### Path parameters
+
+<ParamField path="projectID" type="string" required>
+  UUID of the project containing the flow
+</ParamField>
+
+<ParamField path="flowName" type="string" required>
+  Name of the flow to execute
+</ParamField>
+
+### Response
+
+Returns a FlowRun object with the same structure as the [test flow endpoint](/api/flows#test-a-flow).
+
+<ResponseField name="ID" type="string">
+  Unique identifier for the flow run
+</ResponseField>
+
+<ResponseField name="Status" type="string">
+  Current status: `STOPPED`, `WAITING`, `RUNNING`, `COMPLETE`, or `ERROR`
+</ResponseField>
+
+<ResponseField name="NodeState" type="object">
+  Map of node IDs to their execution state
+</ResponseField>
+
+<ResponseField name="Artifacts" type="object">
+  Map of edge IDs to artifact locations
+</ResponseField>
+
+<ResponseField name="WaitingURLs" type="array">
+  Array of presigned URLs for uploads
+</ResponseField>
+
+<ResponseField name="StartedAt" type="string">
+  ISO 8601 timestamp of execution start time
+</ResponseField>
+
+### Example request
+
+```bash
+curl -X POST http://localhost:1234/api/v1/project/550e8400-e29b-41d4-a716-446655440000/flows/video-transcoding
+```
+
+### Example response
+
+```json
+{
+  "ID": "run_def456ghi",
+  "Status": "RUNNING",
+  "NodeState": {
+    "transcode-1": {
+      "Status": "RUNNING",
+      "Logs": [],
+      "Error": "",
+      "Attempt": 1,
+      "MaxAttempts": 2
+    }
+  },
+  "Artifacts": {},
+  "WaitingURLs": [
+    {
+      "Artifact": {
+        "StoreName": "default",
+        "ObjectName": "input-video.mp4",
+        "EdgeName": "video-input"
+      },
+      "PutURL": "https://storage.example.com/upload?token=xyz",
+      "TTL": "2026-03-03T11:00:00Z"
+    }
+  ],
+  "StartedAt": "2026-03-03T10:45:00Z"
+}
+```
+
+### Error responses
+
+<ResponseField name="400" type="error">
+  Invalid project ID or flow not found
+</ResponseField>
+
+<ResponseField name="500" type="error">
+  Flow execution failed
+</ResponseField>
+
+---
+
+## Polling for completion
+
+Flow execution is asynchronous. After starting a flow, poll the [flow status endpoint](/api/flows#get-flow-run-status) using the returned flow run ID:
+
+```bash
+# Start the flow
+RUN_ID=$(curl -X POST http://localhost:1234/api/v1/project/{projectID}/flows/{flowName} | jq -r '.ID')
+
+# Poll for status
+while true; do
+  STATUS=$(curl http://localhost:1234/api/v1/flow/status/$RUN_ID | jq -r '.Status')
+  echo "Status: $STATUS"
+  
+  if [ "$STATUS" = "COMPLETE" ] || [ "$STATUS" = "ERROR" ]; then
+    break
+  fi
+  
+  sleep 2
+done
+```

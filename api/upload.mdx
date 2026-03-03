@@ -1,0 +1,154 @@
+---
+title: Upload endpoints
+description: Handle file uploads for flow execution
+---
+
+The Upload API provides endpoints for managing file uploads that serve as inputs to flow executions.
+
+<Note>
+  The upload endpoints are currently under development. Use presigned URLs from the [WaitingURLs field](/api/flows#test-a-flow) in flow run responses for now.
+</Note>
+
+## Current upload workflow
+
+When a flow is waiting for input data, the flow run response includes a `WaitingURLs` array with presigned upload URLs:
+
+```json
+{
+  "ID": "run_abc123",
+  "Status": "WAITING",
+  "WaitingURLs": [
+    {
+      "Artifact": {
+        "StoreName": "default",
+        "ObjectName": "input-file.jpg",
+        "EdgeName": "image-input"
+      },
+      "PutURL": "https://storage.example.com/upload?token=abc123",
+      "TTL": "2026-03-03T11:00:00Z"
+    }
+  ]
+}
+```
+
+### Upload using presigned URL
+
+Use the presigned `PutURL` to upload your file directly:
+
+```bash
+curl -X PUT "https://storage.example.com/upload?token=abc123" \
+  -H "Content-Type: image/jpeg" \
+  --data-binary @input-file.jpg
+```
+
+### Important notes
+
+- Presigned URLs expire after the time specified in the `TTL` field
+- Upload the file using an HTTP `PUT` request
+- Set the appropriate `Content-Type` header for your file
+- Use `--data-binary` (curl) or equivalent to preserve file encoding
+
+## Data wells and input sources
+
+Flows can define data wells that specify where input data comes from:
+
+```json
+{
+  "Flow": {
+    "DataWells": [
+      {
+        "Edge": "image-input",
+        "Store": "s3-bucket",
+        "Source": "upload",
+        "Key": "${RUN_ID}/input.jpg"
+      }
+    ]
+  }
+}
+```
+
+### Source types
+
+Data wells support different source types:
+
+- `upload` - File uploaded via presigned URL
+- `webhook` - Data received from webhook callback (coming soon)
+- `static` - Static data or file reference (coming soon)
+
+## Future upload endpoints
+
+The following endpoints are planned for future releases:
+
+### Direct upload endpoint
+
+```http
+POST /api/v1/upload
+```
+
+Direct file upload endpoint (planned).
+
+### Upload to flow run
+
+```http
+POST /api/v1/upload/{flowRunID}/{edgeName}
+```
+
+Upload a file directly to a specific edge of a running flow (planned).
+
+## Best practices
+
+<Tip>
+  Always check the `TTL` field and upload files before the presigned URL expires.
+</Tip>
+
+1. **Check flow status first** - Verify the flow is in `WAITING` status before uploading
+2. **Validate TTL** - Ensure presigned URLs haven't expired
+3. **Use correct content type** - Set appropriate MIME types for your files
+4. **Handle upload failures** - Implement retry logic for failed uploads
+5. **Monitor flow progress** - Poll flow status after uploading to confirm processing started
+
+## Example: Complete upload workflow
+
+```bash
+# 1. Start a flow
+RUN_RESPONSE=$(curl -X POST http://localhost:1234/api/v1/flow/test \
+  -H "Content-Type: application/json" \
+  -d @flow-definition.json)
+
+RUN_ID=$(echo $RUN_RESPONSE | jq -r '.ID')
+STATUS=$(echo $RUN_RESPONSE | jq -r '.Status')
+
+# 2. Check if upload is needed
+if [ "$STATUS" = "WAITING" ]; then
+  # 3. Extract presigned URL
+  UPLOAD_URL=$(echo $RUN_RESPONSE | jq -r '.WaitingURLs[0].PutURL')
+  
+  # 4. Upload the file
+  curl -X PUT "$UPLOAD_URL" \
+    -H "Content-Type: image/jpeg" \
+    --data-binary @input-image.jpg
+  
+  echo "File uploaded successfully"
+fi
+
+# 5. Poll for completion
+while true; do
+  STATUS=$(curl http://localhost:1234/api/v1/flow/status/$RUN_ID | jq -r '.Status')
+  
+  if [ "$STATUS" = "COMPLETE" ]; then
+    echo "Flow completed successfully"
+    break
+  elif [ "$STATUS" = "ERROR" ]; then
+    echo "Flow failed"
+    break
+  fi
+  
+  sleep 2
+done
+```
+
+## See also
+
+- [Flow endpoints](/api/flows) - Execute and monitor flows
+- [Project endpoints](/api/projects) - Manage projects and flows
+- [API overview](/api/overview) - General API information

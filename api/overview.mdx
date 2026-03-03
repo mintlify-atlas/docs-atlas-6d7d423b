@@ -1,0 +1,72 @@
+---
+title: API overview
+description: Learn about the Pupload API, including base URL, authentication, and general conventions
+---
+
+The Pupload API provides programmatic access to flow execution, project management, and upload handling. Use the API to integrate Pupload's workflow automation capabilities into your applications.
+
+## Base URL
+
+All API requests are made to:
+
+```
+http://localhost:1234/api/v1
+```
+
+Replace `localhost:1234` with your Pupload controller's host and port.
+
+## Authentication
+
+The current version of the Pupload API does not require authentication. This may change in future versions for production deployments.
+
+## Request format
+
+The API accepts JSON-encoded request bodies for POST requests. Include the following header:
+
+```
+Content-Type: application/json
+```
+
+## Response format
+
+All responses are JSON-encoded. Successful responses return a `200` status code with the relevant data.
+
+Error responses include an HTTP error status code and a plain text error message:
+
+```json
+{
+  "error": "Flow run does not exist."
+}
+```
+
+## Common status codes
+
+| Status code | Description |
+|------------|-------------|
+| `200` | Success |
+| `400` | Bad request - Invalid input or parameters |
+| `404` | Not found - Resource does not exist |
+| `500` | Internal server error |
+
+## Rate limiting
+
+The API includes a 60-second timeout for all requests. Long-running flow executions are handled asynchronously - you receive a flow run ID immediately and can poll for status updates.
+
+## API sections
+
+The Pupload API is organized into the following sections:
+
+- **[Flows](/api/flows)** - Test flows and check execution status
+- **[Projects](/api/projects)** - Manage projects and execute saved flows
+- **[Upload](/api/upload)** - Handle file uploads (coming soon)
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Flow endpoints" icon="circle-nodes" href="/api/flows">
+    Test and monitor flow executions
+  </Card>
+  <Card title="Project endpoints" icon="folder" href="/api/projects">
+    Manage projects and run saved flows
+  </Card>
+</CardGroup>

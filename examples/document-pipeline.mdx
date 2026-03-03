@@ -1,0 +1,396 @@
+---
+title: Document pipeline
+description: End-to-end document processing with text extraction, OCR, and search indexing
+---
+
+This example demonstrates a complete document processing pipeline that handles PDFs, extracts text, performs OCR on scanned pages, and indexes the content for full-text search.
+
+## Flow overview
+
+The pipeline processes documents through these stages:
+
+<Steps>
+  <Step title="Upload">
+    User uploads a PDF document
+  </Step>
+  <Step title="Extract metadata">
+    Get page count, file size, creation date, and document properties
+  </Step>
+  <Step title="Extract text">
+    Extract text from native PDF text layers
+  </Step>
+  <Step title="OCR scanned pages">
+    Run OCR on pages without text layers (scanned documents)
+  </Step>
+  <Step title="Merge content">
+    Combine extracted text and OCR results into a single document
+  </Step>
+  <Step title="Index for search">
+    Index the full document in Elasticsearch or similar search engine
+  </Step>
+  <Step title="Generate preview">
+    Create thumbnail previews of first few pages
+  </Step>
+</Steps>
+
+## Complete flow configuration
+
+```yaml document-pipeline.yaml
+Name: document-pipeline
+
+Timeout: "20m"
+
+# Storage configuration
+Stores:
+  - Name: DocumentUploads
+    Type: s3
+    Params:
+      BucketName: document-uploads
+      Region: us-east-1
+
+  - Name: ProcessedDocs
+    Type: s3
+    Params:
+      BucketName: processed-documents
+      Region: us-east-1
+
+# Input and output datawells
+DataWells:
+  - Store: DocumentUploads
+    Edge: pdf-input
+    Source: upload
+
+  - Store: ProcessedDocs
+    Edge: metadata-output
+  
+  - Store: ProcessedDocs
+    Edge: text-output
+  
+  - Store: ProcessedDocs
+    Edge: ocr-output
+  
+  - Store: ProcessedDocs
+    Edge: merged-output
+  
+  - Store: ProcessedDocs
+    Edge: search-index-output
+  
+  - Store: ProcessedDocs
+    Edge: preview-output
+
+# Processing nodes
+Nodes:
+  # Extract PDF metadata
+  - ID: metadata-extractor
+    Uses: github.com/pupload/pupload/pdftools
+    Inputs:
+      - Name: PDFIn
+        Edge: pdf-input
+    Outputs:
+      - Name: MetadataOut
+        Edge: metadata-output
+    Command: ExtractMetadata
+
+  # Extract text from PDF
+  - ID: text-extractor
+    Uses: github.com/pupload/pupload/pdftools
+    Inputs:
+      - Name: PDFIn
+        Edge: pdf-input
+    Outputs:
+      - Name: TextOut
+        Edge: text-output
+    Command: ExtractText
+    Flags:
+      - Name: Layout
+        Value: "preserve"
+      - Name: Encoding
+        Value: "utf-8"
+
+  # OCR scanned pages using Tesseract
+  - ID: ocr-processor
+    Uses: github.com/pupload/pupload/tesseract
+    Inputs:
+      - Name: PDFIn
+        Edge: pdf-input
+    Outputs:
+      - Name: OCROut
+        Edge: ocr-output
+    Command: OCR
+    Flags:
+      - Name: Language
+        Value: "eng"
+      - Name: PSM
+        Value: "3"  # Fully automatic page segmentation
+      - Name: OEM
+        Value: "3"  # Default LSTM OCR engine
+      - Name: DPI
+        Value: "300"
+
+  # Merge extracted text and OCR results
+  - ID: content-merger
+    Uses: github.com/pupload/pupload/pdftools
+    Inputs:
+      - Name: ExtractedText
+        Edge: text-output
+      - Name: OCRText
+        Edge: ocr-output
+      - Name: MetadataIn
+        Edge: metadata-output
+    Outputs:
+      - Name: MergedContent
+        Edge: merged-output
+    Command: MergeContent
+    Flags:
+      - Name: Format
+        Value: "json"
+      - Name: IncludeMetadata
+        Value: "true"
+
+  # Index in search engine
+  - ID: search-indexer
+    Uses: github.com/pupload/pupload/elasticsearch
+    Inputs:
+      - Name: ContentIn
+        Edge: merged-output
+    Outputs:
+      - Name: IndexResult
+        Edge: search-index-output
+    Command: Index
+    Flags:
+      - Name: Endpoint
+        Value: "${ELASTICSEARCH_URL}"
+      - Name: Index
+        Value: "documents"
+      - Name: Pipeline
+        Value: "document-enrichment"
+
+  # Generate page previews
+  - ID: preview-generator
+    Uses: github.com/pupload/pupload/pdftools
+    Inputs:
+      - Name: PDFIn
+        Edge: pdf-input
+    Outputs:
+      - Name: ImagesOut
+        Edge: preview-output
+    Command: RenderPages
+    Flags:
+      - Name: Pages
+        Value: "1-3"  # First 3 pages
+      - Name: DPI
+        Value: "150"
+      - Name: Format
+        Value: "jpg"
+      - Name: Quality
+        Value: "85"
+```
+
+## Node details
+
+### Metadata extractor
+
+Extracts document metadata including:
+- Page count
+- File size and format version
+- Creation and modification dates
+- Author, title, subject
+- Security settings and permissions
+
+- **Resource tier**: `c-small`
+- **Output**: JSON file with complete document metadata
+
+### Text extractor
+
+Extracts text from PDFs with native text layers (digitally created PDFs). Preserves layout and formatting where possible.
+
+- **Resource tier**: `c-small`
+- **Output**: Plain text or structured JSON with page-by-page content
+
+<Note>
+This node only extracts text from PDFs with text layers. Scanned documents or image-based PDFs will produce empty or minimal output. Use the OCR processor for those cases.
+</Note>
+
+### OCR processor
+
+Runs Tesseract OCR on pages without text layers. Automatically detects scanned pages and performs optical character recognition.
+
+- **Resource tier**: `c-medium` or `c-large` (OCR is CPU-intensive)
+- **Languages**: Configure with `Language` flag (eng, spa, fra, deu, etc.)
+- **Output**: Extracted text with confidence scores per page
+
+<Tip>
+**Multi-language documents**: Set the Language flag to multiple languages separated by `+`:
+```yaml
+Flags:
+  - Name: Language
+    Value: "eng+spa+fra"  # English + Spanish + French
+```
+</Tip>
+
+### Content merger
+
+Combines text extraction and OCR results into a single structured document. Uses OCR only for pages where native text extraction failed.
+
+- **Resource tier**: `c-small`
+- **Output**: JSON with page-by-page content, metadata, and source indicators
+
+**Example output structure**:
+```json
+{
+  "document_id": "doc-123",
+  "metadata": {
+    "title": "Annual Report 2025",
+    "pages": 42,
+    "created": "2025-12-01T10:00:00Z"
+  },
+  "pages": [
+    {
+      "page_number": 1,
+      "text": "Annual Report 2025...",
+      "source": "extracted",
+      "confidence": 1.0
+    },
+    {
+      "page_number": 2,
+      "text": "Financial Summary...",
+      "source": "ocr",
+      "confidence": 0.94
+    }
+  ]
+}
+```
+
+### Search indexer
+
+Indexes the merged content into Elasticsearch (or compatible search engines like OpenSearch). Enables full-text search across all documents.
+
+- **Resource tier**: `c-small`
+- **Configuration**: Set `ELASTICSEARCH_URL` environment variable
+- **Output**: Index confirmation with document ID
+
+### Preview generator
+
+Renders the first 3 pages as JPEG images for quick preview in your application UI. Users can see document content without downloading the full PDF.
+
+- **Resource tier**: `c-small`
+- **Output**: 3 JPEG images at 150 DPI
+
+## Running the flow
+
+<Tabs>
+  <Tab title="CLI">
+    ```bash
+    # Test with local PDF
+    pup test document-pipeline \
+      --input pdf-input=./contract.pdf \
+      --controller localhost:8080
+
+    # With environment variables
+    ELASTICSEARCH_URL=http://localhost:9200 \
+      pup test document-pipeline \
+      --input pdf-input=./contract.pdf \
+      --controller localhost:8080
+    ```
+  </Tab>
+  <Tab title="API">
+    ```bash
+    curl -X POST http://localhost:8080/v1/projects/{project_id}/flows/document-pipeline \
+      -H "Content-Type: application/json" \
+      -d '{
+        "inputs": {
+          "pdf-input": "s3://document-uploads/contract-123.pdf"
+        },
+        "environment": {
+          "ELASTICSEARCH_URL": "http://elasticsearch:9200"
+        }
+      }'
+    ```
+  </Tab>
+  <Tab title="SDK (JavaScript)">
+    ```javascript
+    const { PuploadClient } = require('@pupload/client');
+
+    const client = new PuploadClient('http://localhost:8080');
+
+    const run = await client.runFlow({
+      projectId: 'my-project',
+      flowName: 'document-pipeline',
+      inputs: {
+        'pdf-input': 's3://document-uploads/contract-123.pdf'
+      },
+      environment: {
+        ELASTICSEARCH_URL: 'http://elasticsearch:9200'
+      }
+    });
+
+    console.log('Run ID:', run.id);
+    console.log('Status:', run.status);
+    ```
+  </Tab>
+</Tabs>
+
+## Output structure
+
+After processing completes:
+
+```
+processed-documents/
+├── {run-id}/metadata-output/{artifact-id}.json
+├── {run-id}/text-output/{artifact-id}.txt
+├── {run-id}/ocr-output/{artifact-id}.json
+├── {run-id}/merged-output/{artifact-id}.json
+├── {run-id}/search-index-output/{artifact-id}.json
+└── {run-id}/preview-output/
+    ├── page-1.jpg
+    ├── page-2.jpg
+    └── page-3.jpg
+```
+
+## Performance optimization
+
+### Parallel execution
+
+The metadata extraction, text extraction, OCR, and preview generation all run in **parallel** since they depend only on the original PDF. This significantly reduces total processing time.
+
+Only the content merger and search indexer run sequentially (merger waits for extraction + OCR, indexer waits for merger).
+
+### OCR optimization
+
+OCR is the most expensive operation. Optimize performance:
+
+1. **Reduce DPI for draft processing**: Use 200 DPI instead of 300
+2. **Process only necessary pages**: Skip cover pages, blank pages
+3. **Use GPU acceleration**: Some OCR engines support GPU acceleration
+4. **Pre-filter scanned pages**: Only run OCR on pages without text layers
+
+### Resource configuration
+
+```yaml worker.yaml
+worker:
+  resources:
+    - c-small   # Metadata, text extraction, previews
+    - c-large   # OCR processing
+  docker:
+    limits:
+      cpu: "4"
+      memory: "8GB"  # OCR benefits from more memory
+```
+
+## Error handling
+
+<Note>
+**Password-protected PDFs**: The text extractor will fail on encrypted PDFs. Add a pre-processing node to detect and reject password-protected documents, or add a password input parameter.
+</Note>
+
+<Note>
+**Corrupted files**: Add validation nodes at the start of the pipeline to verify PDF integrity before processing.
+</Note>
+
+## Next steps
+
+- Add named entity recognition to extract people, places, and organizations
+- Implement language detection for multi-language documents
+- Set up webhooks to notify when indexing completes
+- Configure [retention policies](/concepts/flows) to clean up processed files
+- Add document classification using ML models

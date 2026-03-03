@@ -1,0 +1,490 @@
+---
+title: Custom nodes
+description: Learn how to create custom node definitions to extend Pupload with your own processing logic
+---
+
+Node definitions are reusable components that define how containers process data in Pupload. They specify inputs, outputs, resource requirements, and execution commands.
+
+## Node definition structure
+
+A node definition is defined in YAML with the following fields:
+
+```yaml
+Publisher: myorg
+Name: myprocessor
+Image: myregistry/myimage:latest
+Tier: c-small
+MaxAttempts: 3
+
+Inputs:
+  - Name: InputData
+    Description: The data to process
+    Required: true
+    Type:
+      - application/json
+      - text/plain
+
+Outputs:
+  - Name: ProcessedData
+    Description: The processed output
+    Required: true
+    Type:
+      - application/json
+
+Flags:
+  - Name: Mode
+    Description: Processing mode
+    Required: false
+    Type: string
+
+Command:
+  Name: Process
+  Description: Process the input data
+  Exec: python /app/process.py --input ${InputData} --output ${ProcessedData} --mode ${Mode}
+```
+
+## Creating a node definition
+
+<Steps>
+  <Step title="Define basic metadata">
+    Start with the publisher name and node name:
+
+    ```yaml
+    Publisher: github.com/myorg
+    Name: dataprocessor
+    ```
+
+    The combination of publisher and name creates a unique identifier: `github.com/myorg/dataprocessor`
+  </Step>
+
+  <Step title="Specify the container image">
+    Reference the Docker image that contains your processing logic:
+
+    ```yaml
+    Image: myregistry.io/myorg/dataprocessor:v1.2.3
+    ```
+
+    <Warning>
+      Ensure the image is accessible from your worker nodes and matches any security policies configured in your worker settings.
+    </Warning>
+  </Step>
+
+  <Step title="Define inputs">
+    Specify what data your node expects to receive:
+
+    ```yaml
+    Inputs:
+      - Name: RawData
+        Description: Unprocessed input data
+        Required: true
+        Type:
+          - application/json
+          - application/xml
+      
+      - Name: ConfigFile
+        Description: Optional configuration
+        Required: false
+        Type:
+          - text/yaml
+    ```
+
+    Each input includes:
+    - **Name**: Identifier used in flows and commands
+    - **Description**: Human-readable explanation
+    - **Required**: Whether the input must be provided
+    - **Type**: Accepted MIME types
+  </Step>
+
+  <Step title="Define outputs">
+    Specify what data your node produces:
+
+    ```yaml
+    Outputs:
+      - Name: Results
+        Description: Processed results
+        Required: true
+        Type:
+          - application/json
+      
+      - Name: Logs
+        Description: Processing logs
+        Required: false
+        Type:
+          - text/plain
+    ```
+  </Step>
+
+  <Step title="Add configuration flags">
+    Define optional parameters that control node behavior:
+
+    ```yaml
+    Flags:
+      - Name: Workers
+        Description: Number of parallel workers
+        Required: false
+        Type: int
+      
+      - Name: Timeout
+        Description: Processing timeout in seconds
+        Required: false
+        Type: int
+      
+      - Name: Verbose
+        Description: Enable verbose logging
+        Required: false
+        Type: bool
+    ```
+
+    Supported flag types:
+    - `string`
+    - `int`
+    - `float`
+    - `bool`
+  </Step>
+
+  <Step title="Define the command">
+    Specify how to execute your processing logic:
+
+    ```yaml
+    Command:
+      Name: Process
+      Description: Process input data and generate results
+      Exec: python /app/main.py --input ${RawData} --output ${Results} --workers ${Workers} --verbose ${Verbose}
+    ```
+
+    Use `${VariableName}` syntax to reference inputs, outputs, and flags.
+  </Step>
+
+  <Step title="Configure resource tier">
+    Specify the resource tier your node requires:
+
+    ```yaml
+    Tier: c-medium
+    ```
+
+    If not specified, defaults to `c-small`. See the [resource tiers guide](/guides/resource-tiers) for available options.
+  </Step>
+
+  <Step title="Set retry behavior">
+    Configure how many times a failed execution should be retried:
+
+    ```yaml
+    MaxAttempts: 3
+    ```
+
+    If not specified, defaults to `3` attempts.
+  </Step>
+</Steps>
+
+## Complete example
+
+Here's a complete node definition for an image processing service:
+
+```yaml
+Publisher: github.com/pupload
+Name: imageprocessor
+Image: pupload/imageprocessor:2.1.0
+Tier: c-small
+MaxAttempts: 3
+
+Inputs:
+  - Name: SourceImage
+    Description: The image to process
+    Required: true
+    Type:
+      - image/jpeg
+      - image/png
+      - image/webp
+
+Outputs:
+  - Name: ProcessedImage
+    Description: The processed image
+    Required: true
+    Type:
+      - image/jpeg
+      - image/png
+      - image/webp
+  
+  - Name: Metadata
+    Description: Processing metadata
+    Required: false
+    Type:
+      - application/json
+
+Flags:
+  - Name: Format
+    Description: Output format (jpeg, png, webp)
+    Required: false
+    Type: string
+  
+  - Name: Quality
+    Description: Output quality (1-100)
+    Required: false
+    Type: int
+  
+  - Name: Width
+    Description: Target width in pixels
+    Required: false
+    Type: int
+  
+  - Name: Height
+    Description: Target height in pixels
+    Required: false
+    Type: int
+
+Command:
+  Name: Convert
+  Description: Convert and resize images
+  Exec: /usr/bin/imageproc --input ${SourceImage} --output ${ProcessedImage} --format ${Format} --quality ${Quality} --width ${Width} --height ${Height} --metadata ${Metadata}
+```
+
+## Default values
+
+Pupload provides sensible defaults for optional fields:
+
+- **Tier**: `c-small` (2 CPU cores, 2GB RAM, 20GB storage)
+- **MaxAttempts**: `3`
+
+These values are defined in internal/models/node_def.go:
+
+```go
+const (
+    DefaultTier     = "c-small"
+    DefaultAttempts = 3
+)
+```
+
+## Input and output types
+
+You can specify multiple MIME types for inputs and outputs:
+
+```yaml
+Inputs:
+  - Name: MediaFile
+    Description: Video or audio file
+    Required: true
+    Type:
+      - video/mp4
+      - video/avi
+      - video/quicktime
+      - audio/mpeg
+      - audio/wav
+```
+
+Common MIME types:
+- **Images**: `image/jpeg`, `image/png`, `image/gif`, `image/webp`
+- **Video**: `video/mp4`, `video/avi`, `video/quicktime`, `video/webm`
+- **Audio**: `audio/mpeg`, `audio/wav`, `audio/ogg`, `audio/aac`
+- **Documents**: `application/pdf`, `text/plain`, `text/html`, `application/json`
+- **Archives**: `application/zip`, `application/x-tar`, `application/gzip`
+
+## Command variable substitution
+
+The `Exec` field supports variable substitution using `${VariableName}` syntax:
+
+```yaml
+Command:
+  Name: Process
+  Exec: /app/processor --input ${InputFile} --output ${OutputFile} --threads ${Threads} --verbose ${Verbose}
+```
+
+Variables can reference:
+- Input names (e.g., `${InputFile}`)
+- Output names (e.g., `${OutputFile}`)
+- Flag names (e.g., `${Threads}`)
+
+<Tip>
+  Pupload automatically handles file path resolution and mounting for input and output variables.
+</Tip>
+
+## Resource tiers
+
+Choose the appropriate tier based on your processing requirements:
+
+<Tabs>
+  <Tab title="CPU-optimized">
+    Best for general-purpose computing tasks:
+
+    - `c-nano`: 1 CPU, 512MB RAM, 10GB storage
+    - `c-micro`: 1 CPU, 1GB RAM, 10GB storage
+    - `c-small`: 2 CPU, 2GB RAM, 20GB storage (default)
+    - `c-medium`: 4 CPU, 4GB RAM, 50GB storage
+    - `c-large`: 8 CPU, 8GB RAM, 100GB storage
+    - `c-xlarge`: 16 CPU, 16GB RAM, 250GB storage
+    - `c-2xlarge`: 32 CPU, 32GB RAM, 500GB storage
+    - `c-4xlarge`: 64 CPU, 64GB RAM, 1TB storage
+  </Tab>
+  
+  <Tab title="Memory-optimized">
+    Best for memory-intensive workloads:
+
+    - `m-small`: 2 CPU, 4GB RAM, 20GB storage
+    - `m-medium`: 4 CPU, 16GB RAM, 50GB storage
+    - `m-large`: 8 CPU, 32GB RAM, 100GB storage
+    - `m-xlarge`: 16 CPU, 64GB RAM, 250GB storage
+    - `m-2xlarge`: 32 CPU, 128GB RAM, 500GB storage
+    - `m-4xlarge`: 64 CPU, 256GB RAM, 1TB storage
+  </Tab>
+  
+  <Tab title="GPU-accelerated">
+    Best for GPU compute workloads:
+
+    - `g-micro`: 4 CPU, 8GB RAM, 20GB storage, 1x GPU (2GB)
+    - `g-small`: 4 CPU, 16GB RAM, 100GB storage, 1x GPU (8GB)
+    - `g-medium`: 8 CPU, 32GB RAM, 250GB storage, 1x GPU (16GB)
+    - `g-large`: 12 CPU, 48GB RAM, 500GB storage, 1x GPU (24GB)
+    - `g-xlarge`: 16 CPU, 64GB RAM, 1TB storage, 1x GPU (40GB)
+    - `g-2xlarge`: 24 CPU, 96GB RAM, 1TB storage, 1x GPU (80GB)
+
+    See the [resource tiers guide](/guides/resource-tiers) for vendor-specific GPU tiers.
+  </Tab>
+</Tabs>
+
+## Multiple commands
+
+While a node definition currently supports one command, you can create multiple node definitions for different operations on the same image:
+
+```yaml
+# resize-node.yaml
+Publisher: github.com/myorg
+Name: imageprocessor
+Image: myorg/imagetools:latest
+Command:
+  Name: Resize
+  Exec: /app/resize ${Input} ${Output} --width ${Width} --height ${Height}
+```
+
+```yaml
+# convert-node.yaml
+Publisher: github.com/myorg
+Name: imageprocessor
+Image: myorg/imagetools:latest
+Command:
+  Name: Convert
+  Exec: /app/convert ${Input} ${Output} --format ${Format}
+```
+
+## Container requirements
+
+Your container image should:
+
+1. **Accept file paths**: Pupload passes file paths for inputs and outputs
+2. **Handle errors gracefully**: Return non-zero exit codes on failure
+3. **Log to stdout/stderr**: Logs are captured automatically
+4. **Be stateless**: Don't rely on persistent state between invocations
+5. **Complete execution**: Process must exit when complete
+
+## Example implementation
+
+Here's a simple Python script that works with Pupload:
+
+```python
+import sys
+import json
+import argparse
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--input', required=True)
+    parser.add_argument('--output', required=True)
+    parser.add_argument('--mode', default='standard')
+    args = parser.parse_args()
+    
+    try:
+        # Read input data
+        with open(args.input, 'r') as f:
+            data = json.load(f)
+        
+        # Process data
+        result = process_data(data, args.mode)
+        
+        # Write output
+        with open(args.output, 'w') as f:
+            json.dump(result, f)
+        
+        print(f"Successfully processed {args.input}")
+        return 0
+        
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+if __name__ == '__main__':
+    sys.exit(main())
+```
+
+Corresponding Dockerfile:
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+COPY process.py .
+
+ENTRYPOINT ["python", "process.py"]
+```
+
+## Testing your node definition
+
+<Info>
+  Test your node definition locally before deploying it to production.
+</Info>
+
+Create a test flow that uses your node:
+
+```yaml
+Name: testMyNode
+
+Stores:
+  - Name: TestStore
+    Type: s3local
+    Params:
+      BucketName: test
+
+DefaultStore: TestStore
+
+DataWells:
+  - Store: TestStore
+    Edge: test_input
+  - Store: TestStore
+    Edge: test_output
+
+Nodes:
+  - ID: test-node
+    DefName: github.com/myorg/myprocessor
+    Inputs:
+      - Name: InputData
+        Edge: test_input
+    Outputs:
+      - Name: ProcessedData
+        Edge: test_output
+    Flags:
+      - Name: Mode
+        Value: test
+    Command: Process
+```
+
+## Best practices
+
+<Tip>
+  Follow these best practices for robust, reusable node definitions:
+</Tip>
+
+1. **Version your images**: Always use specific image tags, not `latest`
+2. **Document thoroughly**: Provide clear descriptions for all inputs, outputs, and flags
+3. **Choose appropriate tiers**: Don't over-provision resources
+4. **Set realistic retry counts**: Balance reliability with cost
+5. **Use meaningful names**: Make it clear what the node does
+6. **Handle all error cases**: Ensure your container exits with appropriate codes
+7. **Test with various inputs**: Validate behavior with different data types
+8. **Keep containers small**: Minimize image size for faster startup
+
+## Next steps
+
+- Use your custom nodes in [flows](/guides/creating-flows)
+- Learn about [resource tiers](/guides/resource-tiers) in detail
+- Configure [storage backends](/guides/storage-backends) for your data
+- Deploy your nodes with the [deployment guide](/guides/deployment)

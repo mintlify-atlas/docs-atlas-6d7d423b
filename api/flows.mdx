@@ -1,0 +1,290 @@
+---
+title: Flow endpoints
+description: Test flows and retrieve execution status using the Flow API
+---
+
+The Flow API allows you to test flows without saving them to a project and monitor the status of running flows.
+
+## Test a flow
+
+<Warning>
+  This endpoint executes the flow immediately. Make sure your flow definition is valid before testing.
+</Warning>
+
+```http
+POST /api/v1/flow/test
+```
+
+Test a flow by providing the flow definition and node definitions. This executes the flow and returns a flow run object.
+
+### Request body
+
+<ParamField body="Flow" type="object" required>
+  The flow definition object
+  
+  <Expandable title="Flow properties">
+    <ParamField body="Name" type="string" required>
+      Name of the flow
+    </ParamField>
+    
+    <ParamField body="Timeout" type="string">
+      Timeout duration for the flow (e.g., "5m")
+    </ParamField>
+    
+    <ParamField body="Stores" type="array">
+      Array of store configurations for data storage
+    </ParamField>
+    
+    <ParamField body="DefaultDataWell" type="object">
+      Default data well configuration
+    </ParamField>
+    
+    <ParamField body="DataWells" type="array">
+      Array of data well configurations for edges
+    </ParamField>
+    
+    <ParamField body="Nodes" type="array" required>
+      Array of node objects defining the flow structure
+      
+      <Expandable title="Node properties">
+        <ParamField body="ID" type="string" required>
+          Unique identifier for the node
+        </ParamField>
+        
+        <ParamField body="Uses" type="string" required>
+          Node definition reference (format: "publisher/name")
+        </ParamField>
+        
+        <ParamField body="Inputs" type="array">
+          Array of input edge connections
+        </ParamField>
+        
+        <ParamField body="Outputs" type="array">
+          Array of output edge connections
+        </ParamField>
+        
+        <ParamField body="Flags" type="array">
+          Array of flag configurations for the node
+        </ParamField>
+        
+        <ParamField body="Command" type="string">
+          Command to execute
+        </ParamField>
+      </Expandable>
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="NodeDefs" type="array" required>
+  Array of node definition objects
+  
+  <Expandable title="NodeDef properties">
+    <ParamField body="Publisher" type="string" required>
+      Publisher of the node
+    </ParamField>
+    
+    <ParamField body="Name" type="string" required>
+      Name of the node type
+    </ParamField>
+    
+    <ParamField body="Image" type="string" required>
+      Container image to use for execution
+    </ParamField>
+    
+    <ParamField body="Inputs" type="array">
+      Array of input edge definitions
+    </ParamField>
+    
+    <ParamField body="Outputs" type="array">
+      Array of output edge definitions
+    </ParamField>
+    
+    <ParamField body="Flags" type="array">
+      Array of flag definitions
+    </ParamField>
+    
+    <ParamField body="Command" type="object">
+      Command definition for the node
+    </ParamField>
+    
+    <ParamField body="Tier" type="string" default="c-small">
+      Resource tier for execution
+    </ParamField>
+    
+    <ParamField body="MaxAttempts" type="integer" default="3">
+      Maximum retry attempts on failure
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Response
+
+<ResponseField name="ID" type="string">
+  Unique identifier for the flow run
+</ResponseField>
+
+<ResponseField name="Status" type="string">
+  Current status of the flow run. Possible values:
+  - `STOPPED` - Flow has stopped
+  - `WAITING` - Flow is waiting for input
+  - `RUNNING` - Flow is currently executing
+  - `COMPLETE` - Flow completed successfully
+  - `ERROR` - Flow encountered an error
+</ResponseField>
+
+<ResponseField name="NodeState" type="object">
+  Map of node IDs to their current state
+  
+  <Expandable title="NodeState properties">
+    <ResponseField name="Status" type="string">
+      Node execution status: `IDLE`, `READY`, `RUNNING`, `RETRYING`, `COMPLETE`, or `ERROR`
+    </ResponseField>
+    
+    <ResponseField name="Logs" type="array">
+      Array of log records from the node execution
+    </ResponseField>
+    
+    <ResponseField name="Error" type="string">
+      Error message if the node failed
+    </ResponseField>
+    
+    <ResponseField name="Attempt" type="integer">
+      Current attempt number
+    </ResponseField>
+    
+    <ResponseField name="MaxAttempts" type="integer">
+      Maximum number of retry attempts
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="Artifacts" type="object">
+  Map of edge IDs to artifact locations
+</ResponseField>
+
+<ResponseField name="WaitingURLs" type="array">
+  Array of presigned URLs waiting for data upload
+</ResponseField>
+
+<ResponseField name="StartedAt" type="string">
+  ISO 8601 timestamp of when the flow started
+</ResponseField>
+
+### Example request
+
+```bash
+curl -X POST http://localhost:1234/api/v1/flow/test \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Flow": {
+      "Name": "image-resize",
+      "Nodes": [
+        {
+          "ID": "resize-1",
+          "Uses": "pupload/resize",
+          "Inputs": [{"Name": "image", "Edge": "input-image"}],
+          "Outputs": [{"Name": "resized", "Edge": "output-image"}],
+          "Flags": [{"Name": "width", "Value": "800"}]
+        }
+      ]
+    },
+    "NodeDefs": [
+      {
+        "Publisher": "pupload",
+        "Name": "resize",
+        "Image": "pupload/resize:latest",
+        "Tier": "c-small",
+        "MaxAttempts": 3
+      }
+    ]
+  }'
+```
+
+### Example response
+
+```json
+{
+  "ID": "run_abc123xyz",
+  "Status": "RUNNING",
+  "NodeState": {
+    "resize-1": {
+      "Status": "RUNNING",
+      "Logs": [],
+      "Error": "",
+      "Attempt": 1,
+      "MaxAttempts": 3
+    }
+  },
+  "Artifacts": {},
+  "WaitingURLs": [],
+  "StartedAt": "2026-03-03T10:30:00Z"
+}
+```
+
+---
+
+## Get flow run status
+
+```http
+GET /api/v1/flow/status/{flowRunID}
+```
+
+Retrieve the current status of a flow run by its ID.
+
+### Path parameters
+
+<ParamField path="flowRunID" type="string" required>
+  The unique identifier of the flow run
+</ParamField>
+
+### Response
+
+Returns the same FlowRun object structure as the test flow endpoint (see above).
+
+### Example request
+
+```bash
+curl http://localhost:1234/api/v1/flow/status/run_abc123xyz
+```
+
+### Example response
+
+```json
+{
+  "ID": "run_abc123xyz",
+  "Status": "COMPLETE",
+  "NodeState": {
+    "resize-1": {
+      "Status": "COMPLETE",
+      "Logs": [
+        {
+          "timestamp": "2026-03-03T10:30:05Z",
+          "message": "Image resized successfully"
+        }
+      ],
+      "Error": "",
+      "Attempt": 1,
+      "MaxAttempts": 3
+    }
+  },
+  "Artifacts": {
+    "output-image": {
+      "StoreName": "default",
+      "ObjectName": "abc123.jpg",
+      "EdgeName": "output-image"
+    }
+  },
+  "WaitingURLs": [],
+  "StartedAt": "2026-03-03T10:30:00Z"
+}
+```
+
+### Error responses
+
+<ResponseField name="400" type="error">
+  Flow run does not exist
+</ResponseField>
+
+```json
+"Flow run does not exist."
+```

@@ -1,0 +1,341 @@
+---
+title: Stores
+description: Understanding storage backends and data persistence in Pupload
+---
+
+## What are stores?
+
+Stores are storage backends that persist data between node executions in Pupload. They provide a consistent interface for uploading, downloading, and managing objects regardless of the underlying storage system.
+
+Every flow must define at least one store to handle input and output data.
+
+## Store interface
+
+All stores implement a common interface:
+
+```go
+type Store interface {
+    PutURL(ctx context.Context, objectName string, expires time.Duration) (*url.URL, error)
+    GetURL(ctx context.Context, objectName string, expires time.Duration) (*url.URL, error)
+    DeleteObject(ctx context.Context, objectName string) error
+    Exists(objectName string) bool
+}
+```
+
+From `internal/models/store.go:21-26`
+
+<Note>
+Stores use presigned URLs for data transfer, keeping credentials secure and enabling direct client-to-storage communication.
+</Note>
+
+## Store configuration
+
+Stores are configured in flows using the `StoreInput` structure:
+
+```go
+type StoreInput struct {
+    Name string
+    Type string
+
+    Params json.RawMessage
+}
+```
+
+From `internal/models/store.go:10-15`
+
+### Example configuration
+
+```yaml
+Stores:
+  - Name: TestStore
+    Type: s3local
+    Params:
+      BucketName: test123
+
+  - Name: FileStore
+    Type: s3fs
+    Params:
+      BucketName: testfs
+      MountPath: /home/seb/data/fsdata
+```
+
+From `internal/controller/flows/defaults/Flows/test.yaml:3-13`
+
+## Available store types
+
+### S3-compatible storage
+
+Connect to any S3-compatible storage service (AWS S3, MinIO, DigitalOcean Spaces, etc.):
+
+```go
+type S3StoreInput struct {
+    Endpoint   string
+    BucketName string
+    Location   string
+    AccessKey  string
+    SecretKey  string
+
+    Secure *bool
+}
+```
+
+From `internal/stores/s3/s3.go:21-29`
+
+**Configuration example:**
+
+```yaml
+Stores:
+  - Name: Production
+    Type: s3
+    Params:
+      Endpoint: s3.amazonaws.com
+      BucketName: my-pupload-data
+      Location: us-east-1
+      AccessKey: ${AWS_ACCESS_KEY}
+      SecretKey: ${AWS_SECRET_KEY}
+      Secure: true
+```
+
+<Info>
+The S3 store supports any S3-compatible API, making it highly portable across cloud providers.
+</Info>
+
+### Local S3 (in-memory)
+
+Perfect for testing and development:
+
+```go
+type LocalS3StoreInput struct {
+    BucketName string
+}
+```
+
+From `internal/stores/local_s3/local_s3.go:24-26`
+
+```yaml
+Stores:
+  - Name: TestStore
+    Type: s3local
+    Params:
+      BucketName: test-data
+```
+
+<Warning>
+Local S3 stores keep data in memory only. All data is lost when the controller restarts. Use only for testing.
+</Warning>
+
+The local S3 implementation uses an in-memory fake S3 server:
+
+```go
+func NewLocalS3Store(input LocalS3StoreInput) (*LocalS3Store, error) {
+    backend := s3mem.New()
+    faker := gofakes3.New(backend)
+
+    ts := httptest.NewServer(faker.Server())
+
+    u, err := url.Parse(ts.URL)
+    if err != nil {
+        return nil, err
+    }
+
+    // ... creates minio client ...
+
+    minioClient.MakeBucket(context.TODO(), input.BucketName, minio.MakeBucketOptions{})
+
+    return &LocalS3Store{
+        server: ts,
+        client: minioClient,
+        bucket: input.BucketName,
+    }, nil
+}
+```
+
+From `internal/stores/local_s3/local_s3.go:28-67`
+
+### Filesystem-backed S3
+
+Provides an S3-compatible API backed by the local filesystem:
+
+```go
+type FilesystemS3StoreInput struct {
+    MountPath  string
+    BucketName string
+}
+```
+
+From `internal/stores/s3_fs/s3_fs.go:26-29`
+
+```yaml
+Stores:
+  - Name: LocalFiles
+    Type: s3fs
+    Params:
+      BucketName: data
+      MountPath: /var/pupload/storage
+```
+
+<Tip>
+Filesystem S3 stores are great for development when you want persistent storage without setting up S3.
+</Tip>
+
+The implementation uses `afero` to provide filesystem access:
+
+```go
+func NewLocalS3Store(input FilesystemS3StoreInput) (*FilesystemS3Store, error) {
+    fs := afero.NewOsFs()
+    fs = afero.NewBasePathFs(fs, input.MountPath)
+    metaFS := afero.NewOsFs()
+    metaFS = afero.NewBasePathFs(metaFS, path.Join(input.MountPath, "meta"))
+
+    backend, err := s3afero.SingleBucket(input.BucketName, fs, metaFS)
+    if err != nil {
+        return nil, err
+    }
+
+    faker := gofakes3.New(backend)
+    ts := httptest.NewServer(faker.Server())
+    
+    // ... creates minio client ...
+}
+```
+
+From `internal/stores/s3_fs/s3_fs.go:31-78`
+
+## Store operations
+
+### Generating presigned URLs
+
+Stores generate time-limited presigned URLs for secure data transfer:
+
+```go
+func (s *S3Store) PutURL(ctx context.Context, objectName string, expires time.Duration) (u *url.URL, err error) {
+    u, err = s.client.PresignedPutObject(ctx, s.bucket, objectName, expires)
+    if err != nil {
+        return nil, fmt.Errorf("s3 store at %q (bucket %q): %w", s.client.EndpointURL().Host, s.bucket, err)
+    }
+    return u, nil
+}
+
+func (s *S3Store) GetURL(ctx context.Context, objectName string, expires time.Duration) (u *url.URL, err error) {
+    u, err = s.client.PresignedGetObject(ctx, s.bucket, objectName, expires, url.Values{})
+    if err != nil {
+        return nil, fmt.Errorf("s3 store at %q (bucket %q): %w", s.client.EndpointURL().Host, s.bucket, err)
+    }
+    return u, nil
+}
+```
+
+From `internal/stores/s3/s3.go:92-106`
+
+### Checking object existence
+
+Stores can check if objects exist without downloading them:
+
+```go
+func (s *S3Store) Exists(objectName string) bool {
+    _, err := s.client.StatObject(context.TODO(), s.bucket, objectName, minio.GetObjectOptions{})
+    if err != nil {
+        return false
+    }
+
+    return true
+}
+```
+
+From `internal/stores/s3/s3.go:116-123`
+
+This is used by the flow runtime to check if uploaded data is ready:
+
+```go
+func (rt *RuntimeFlow) checkWaitingURL(w models.WaitingURL) WaitingURLResult {
+    store, ok := rt.stores[w.Artifact.StoreName]
+    if !ok {
+        return WaitFailed
+    }
+    exists := store.Exists(w.Artifact.ObjectName)
+    if exists {
+        return WaitReady
+    }
+
+    return WaitNoChange
+}
+```
+
+From `internal/controller/flows/runtime/step.go:155-171`
+
+## Store initialization
+
+Stores are unmarshaled from flow configuration:
+
+```go
+func UnmarshalStore(input models.StoreInput) (models.Store, error) {
+    switch input.Type {
+
+    case "s3":
+        var params s3.S3StoreInput
+        if err := decodeParams(input.Params, &params); err != nil {
+            return nil, fmt.Errorf("error decoding params for s3local, %w", err)
+        }
+
+        store, err := s3.NewS3Store(params)
+        if err != nil {
+            return nil, fmt.Errorf("Unable to create s3 store: %w", err)
+        }
+
+        return store, nil
+
+    default:
+        return nil, fmt.Errorf("invalid store tpye")
+    }
+}
+```
+
+From `internal/stores/store.go:12-32`
+
+<Accordion title="What happens if store initialization fails?">
+If a store fails to initialize, the controller logs a warning and continues without that store. Flows referencing the failed store will error when they try to use it.
+
+```go
+func (rt *RuntimeFlow) constructStores() {
+    for _, storeInput := range rt.Flow.Stores {
+        store, err := stores.UnmarshalStore(storeInput)
+        if err != nil {
+            rt.log.Warn("Invalid store definition", "flow", rt.Flow.Name, "store", storeInput.Name, "error", err.Error())
+            continue
+        }
+
+        rt.stores[storeInput.Name] = store
+    }
+}
+```
+
+From `internal/controller/flows/runtime/runtime.go:120-130`
+</Accordion>
+
+## Best practices
+
+<CardGroup cols={2}>
+  <Card title="Use S3 in production" icon="cloud">
+    Real S3-compatible storage ensures durability and scalability
+  </Card>
+  <Card title="Separate stores by environment" icon="layer-group">
+    Use different stores for dev, staging, and production
+  </Card>
+  <Card title="Set bucket policies" icon="shield">
+    Restrict bucket access to only what Pupload needs
+  </Card>
+  <Card title="Monitor storage costs" icon="chart-line">
+    Track storage usage, especially with high-throughput flows
+  </Card>
+</CardGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Flows" icon="diagram-project" href="/concepts/flows">
+    Learn how stores integrate with flows
+  </Card>
+  <Card title="Nodes" icon="circle-nodes" href="/concepts/nodes">
+    See how nodes read from and write to stores
+  </Card>
+</CardGroup>

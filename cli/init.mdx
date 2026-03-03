@@ -1,0 +1,66 @@
+---
+title: pup init
+description: Initialize a new Pupload project in the current directory
+---
+
+## Overview
+
+The `pup init` command initializes a new Pupload project in the current directory. This creates the necessary project structure and configuration files to get started with Pupload.
+
+## Usage
+
+```bash
+pup init <project-name>
+```
+
+## Arguments
+
+<ParamField path="project-name" type="string" required>
+  The name of the project to initialize. This will be used in project configuration and metadata.
+</ParamField>
+
+## Examples
+
+### Initialize a new project
+
+<CodeGroup>
+```bash Terminal
+pup init my-upload-project
+```
+
+```bash Output
+Project 'my-upload-project' initialized successfully
+```
+</CodeGroup>
+
+### Common workflow
+
+```bash
+# Create a new directory for your project
+mkdir my-project
+cd my-project
+
+# Initialize the Pupload project
+pup init my-project
+```
+
+<Note>
+  The `pup init` command must be run from the directory where you want to create your project. It will initialize the project in the current working directory.
+</Note>
+
+## What gets created
+
+When you run `pup init`, the following project structure is created:
+
+- Project configuration files
+- Default directory structure for flows and nodes
+- Example configuration templates
+
+<Tip>
+  After initializing your project, you can start defining flows and nodes, then use `pup dev` to run a local development environment.
+</Tip>
+
+## Related commands
+
+- [pup dev](/cli/dev) - Start a local development controller and worker
+- [pup validate](/cli/validate) - Validate your project flows

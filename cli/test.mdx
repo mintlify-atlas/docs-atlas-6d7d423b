@@ -1,0 +1,146 @@
+---
+title: pup test
+description: Test a flow locally or on a remote controller
+---
+
+## Overview
+
+The `pup test` command starts a test run on a selected flow. By default, it runs locally by automatically starting a development environment. You can also test against a remote controller.
+
+## Usage
+
+```bash
+pup test <flowname> [flags]
+```
+
+## Arguments
+
+<ParamField path="flowname" type="string" required>
+  The name of the flow to test. This must match a flow defined in your project.
+</ParamField>
+
+## Flags
+
+<ParamField path="--remote" type="string" default="" shorthand="-r">
+  URL of the remote controller to use for testing. If not specified, a local development environment will be started automatically.
+  
+  Example: `--remote http://controller.example.com:1234`
+</ParamField>
+
+<ParamField path="--input" type="map[string]string" shorthand="-i">
+  Specify input files for the flow. Use the format `--input <input_name>=<file_path>`. Can be specified multiple times for multiple inputs.
+  
+  Example: `--input data=./file.jpg --input metadata=./data.json`
+</ParamField>
+
+<ParamField path="--force" type="boolean" default="false" shorthand="-f">
+  Force the run to execute even with missing inputs. Without this flag, the command will fail if required inputs are not provided.
+</ParamField>
+
+<ParamField path="--live" type="boolean" default="false" shorthand="-l">
+  Run with live S3 storage as defined in the flow configuration. By default, a dummy S3 server is used for testing.
+</ParamField>
+
+<ParamField path="--tui" type="boolean" default="false">
+  Enable the Terminal User Interface (TUI) for monitoring the test run. This provides a rich interactive display of the flow execution.
+</ParamField>
+
+## Examples
+
+### Basic test with local environment
+
+<CodeGroup>
+```bash Terminal
+pup test image-processing
+```
+
+```bash Output
+Starting local controller on http://localhost:1234
+Controller ready
+Testing flow: image-processing
+Flow completed successfully
+```
+</CodeGroup>
+
+### Test with input files
+
+```bash
+pup test image-processing \
+  --input image=./photos/test.jpg \
+  --input config=./config.json
+```
+
+### Test against remote controller
+
+```bash
+pup test image-processing \
+  --remote https://prod.example.com:1234 \
+  --input image=./test.jpg
+```
+
+### Test with TUI monitoring
+
+```bash
+pup test image-processing --tui --input data=./file.jpg
+```
+
+This launches an interactive terminal interface showing real-time progress of your flow execution.
+
+### Force execution with missing inputs
+
+```bash
+pup test image-processing --force
+```
+
+<Warning>
+  Using `--force` may cause your flow to fail if required inputs are missing. Use this only for testing optional input scenarios.
+</Warning>
+
+### Test with live S3 storage
+
+```bash
+pup test image-processing --live --input data=./file.jpg
+```
+
+<Note>
+  When using `--live`, ensure your S3 credentials and bucket configuration are properly set up in your flow definition.
+</Note>
+
+## How it works
+
+1. **Environment Setup**: If no `--remote` is specified, automatically starts a local development environment
+2. **Server Wait**: Waits up to 10 seconds for the controller to become ready
+3. **Flow Loading**: Loads the specified flow and its node definitions
+4. **Storage Setup**: Creates a dummy S3 server (unless `--live` is used)
+5. **Run Creation**: Submits the test run to the controller
+6. **Input Upload**: Uploads any files specified via `--input` flags
+7. **Monitoring**: Tracks execution and displays results (or launches TUI if `--tui` is enabled)
+
+## TUI mode
+
+When `--tui` is enabled:
+
+- The development environment runs silently in the background
+- An interactive terminal interface displays flow execution
+- You can monitor task progress, view logs, and see output in real-time
+- Press `q` or `Ctrl+C` to exit the TUI
+
+## Input handling
+
+Inputs are specified using the `--input` flag with the format `name=path`:
+
+```bash
+--input <edge_name>=<file_path>
+```
+
+The `edge_name` corresponds to input edges defined in your flow. The `file_path` should be a valid path to a file on your local system.
+
+<Tip>
+  You can specify multiple inputs by using the `--input` flag multiple times, or use `--force` to test flows with optional inputs.
+</Tip>
+
+## Related commands
+
+- [pup dev](/cli/dev) - Manually start local development environment
+- [pup validate](/cli/validate) - Validate flows before testing
+- [pup push](/cli/push) - Deploy tested flows to production

@@ -1,0 +1,433 @@
+---
+title: Architecture
+description: Understanding the controller/worker architecture in Pupload
+---
+
+## Overview
+
+Pupload uses a distributed controller/worker architecture to orchestrate data processing flows. This design separates flow orchestration from execution, enabling horizontal scaling and efficient resource utilization.
+
+## Architecture components
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                       Controller                        │
+│  - Flow orchestration                                   │
+│  - State management                                     │
+│  - Node scheduling                                      │
+│  - HTTP API                                             │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  │ SyncPlane (Redis)
+                  │
+     ┌────────────┼────────────┬────────────┐
+     │            │            │            │
+     ▼            ▼            ▼            ▼
+┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐
+│Worker 1 │  │Worker 2 │  │Worker 3 │  │Worker N │
+│         │  │         │  │         │  │         │
+│c-small  │  │g-large  │  │m-medium │  │c-large  │
+│2 CPUs   │  │12 CPUs  │  │4 CPUs   │  │8 CPUs   │
+│2GB RAM  │  │48GB RAM │  │16GB RAM │  │8GB RAM  │
+│         │  │24GB GPU │  │         │  │         │
+└─────────┘  └─────────┘  └─────────┘  └─────────┘
+```
+
+## Controller
+
+The controller is the brain of Pupload. It manages flow definitions, schedules nodes to workers, and tracks execution state.
+
+### Controller responsibilities
+
+- **Flow management**: Load and validate flow definitions
+- **State tracking**: Monitor flow and node execution states
+- **Node scheduling**: Assign ready nodes to available workers
+- **API service**: Provide HTTP endpoints for flow submission and monitoring
+- **Storage coordination**: Manage datawell URLs and artifact tracking
+
+### Controller structure
+
+```go
+func RunWithConfig(ctx context.Context, cfg *config.ControllerConfig) error {
+    // Initialize logging and telemetry
+    logging.Init(logging.Config{
+        AppName: "pupload.controller",
+        Level:   slog.LevelInfo,
+        Format:  "text",
+    })
+
+    // Create SyncPlane for controller/worker coordination
+    s, err := syncplane.CreateControllerSyncLayer(cfg.SyncPlane)
+    if err != nil {
+        return err
+    }
+    defer s.Close()
+
+    // Create flow service
+    f, err := flow.CreateFlowService(cfg, s)
+    if err != nil {
+        return err
+    }
+    defer f.Close(ctx)
+
+    // Create project service
+    p, err := projects.CreateProjectService(cfg.ProjectRepo)
+    if err != nil {
+        return err
+    }
+    defer p.Close()
+
+    // Start HTTP server
+    handler := controllerserver.NewServer(*cfg, f, p)
+    srv := &http.Server{
+        Addr:    ":1234",
+        Handler: handler,
+    }
+
+    go func() {
+        if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+            log.Error("server forced to shutdown", "err", err)
+        }
+    }()
+
+    <-ctx.Done()
+    return srv.Shutdown(shutdownCtx)
+}
+```
+
+From `internal/controller/controller.go:93-152`
+
+### Controller configuration
+
+```go
+type ControllerConfig struct {
+    SyncPlane syncplane.SyncPlaneSettings
+    Telemetry telemetry.TelemetrySettings
+
+    ProjectRepo projects.RedisProjectRepoConfig
+    RuntimeRepo repo.RuntimeRepoSettings
+
+    Storage struct {
+        DataPath string
+    }
+}
+```
+
+From `internal/controller/config/config.go:14-24`
+
+<Info>
+Controllers are stateless. All state is stored in Redis (via SyncPlane), allowing you to run multiple controllers for high availability.
+</Info>
+
+## Worker
+
+Workers are the muscle of Pupload. They execute nodes by running containers, transferring data, and reporting results back to the controller.
+
+### Worker responsibilities
+
+- **Resource management**: Track available CPU, memory, storage, and GPU
+- **Node execution**: Run containerized workloads with proper isolation
+- **Data transfer**: Download inputs and upload outputs using presigned URLs
+- **Health reporting**: Advertise available resource tiers to the controller
+
+### Worker structure
+
+```go
+func RunWithConfig(ctx context.Context, cfg *config.WorkerConfig) error {
+    // Initialize logging
+    logging.Init(logging.Config{
+        AppName: "worker",
+        Level:   slog.LevelInfo,
+        Format:  "text",
+    })
+
+    log := logging.Root()
+
+    // Initialize telemetry
+    telemetry.Init(cfg.Telemetry, "pupload.worker")
+
+    // Create SyncPlane for worker communication
+    s, err := syncplane.CreateWorkerSyncLayer(cfg.SyncPlane, cfg.Resources)
+    if err != nil {
+        return err
+    }
+
+    log.Info("Worker starting up...")
+    
+    // Create container service
+    cs := container.CreateContainerService()
+
+    // Create resource manager
+    rm, err := resources.CreateResourceManager(cfg.Resources)
+    if err != nil {
+        return err
+    }
+
+    // Start worker server
+    server.NewWorkerServer(s, &cs, rm)
+
+    <-ctx.Done()
+
+    log.Info("Worker shutting down...")
+    return s.Close()
+}
+```
+
+From `internal/worker/worker.go:29-61`
+
+### Worker configuration
+
+```go
+type WorkerConfig struct {
+    Worker    WorkerSettings
+    SyncPlane syncplane.SyncPlaneSettings
+    Telemetry telemetry.TelemetrySettings
+    Resources resources.ResourceSettings
+    Runtime   RuntimeSettings
+
+    Logging  LoggingSettings
+    Security SecuritySettings
+}
+
+type RuntimeSettings struct {
+    ContainerEngine  string // docker, podman, runsc, auto
+    ContainerRuntime string // runc, gvisor, auto
+
+    EnableGPUSupport bool
+
+    Gvisor GvisorSettings
+}
+```
+
+From `internal/worker/config/config.go:12-34`
+
+<Tip>
+Workers can use different container runtimes (Docker, Podman) and security layers (gVisor) for enhanced isolation.
+</Tip>
+
+## SyncPlane
+
+The SyncPlane is the communication layer between controllers and workers. It handles job queuing, state synchronization, and worker discovery.
+
+### Current implementation: Redis
+
+Pupload currently uses Redis as its SyncPlane implementation:
+
+```go
+viper.SetDefault("SyncPlane.SelectedSyncPlane", "redis")
+viper.SetDefault("SyncPlane.Redis.Address", "localhost:6379")
+viper.SetDefault("SyncPlane.Redis.PoolSize", 10)
+viper.SetDefault("SyncPlane.Redis.MaxRetries", 3)
+```
+
+From `internal/controller/config/config.go:53-56`
+
+<Note>
+The SyncPlane abstraction allows for future implementations using other message brokers or coordination services.
+</Note>
+
+## Flow execution flow
+
+Here's how a flow moves through the system:
+
+1. **Submission**: User submits a flow via the controller's HTTP API
+2. **Initialization**: Controller creates a `FlowRun` and initializes datawells
+3. **Waiting**: Flow waits for input data to be uploaded (if needed)
+4. **Scheduling**: Controller identifies ready nodes and publishes them to the SyncPlane
+5. **Claiming**: Workers with appropriate resources claim nodes from the queue
+6. **Execution**: Worker runs the node in a container with proper resource limits
+7. **Completion**: Worker uploads outputs and reports success/failure to controller
+8. **Next nodes**: Controller marks downstream nodes as ready and schedules them
+9. **Completion**: When all nodes finish, flow is marked as complete
+
+### State machine
+
+Flows progress through these states:
+
+```go
+switch rt.FlowRun.Status {
+case models.FLOWRUN_STOPPED:
+    // Initial state
+
+case models.FLOWRUN_WAITING:
+    rt.updateWaiting()
+    rt.updateAllNodes()
+
+    if len(rt.nodesReady()) == 0 {
+        return
+    }
+
+    rt.FlowRun.Status = models.FLOWRUN_RUNNING
+
+case models.FLOWRUN_RUNNING:
+    for _, nodeID := range rt.nodesReady() {
+        if err := rt.handleExecuteNode(ctx, nodeID, s); err != nil {
+            rt.FlowRun.Status = models.FLOWRUN_ERROR
+            return
+        }
+
+        rt.FlowRun.NodeState[nodeID] = models.NodeState{
+            Status: models.NODERUN_RUNNING,
+            Logs:   rt.FlowRun.NodeState[nodeID].Logs,
+        }
+    }
+
+    rt.FlowRun.Status = models.FLOWRUN_WAITING
+
+case models.FLOWRUN_COMPLETE:
+    return
+
+case models.FLOWRUN_ERROR:
+    return
+}
+```
+
+From `internal/controller/flows/runtime/step.go:32-65`
+
+## Scaling patterns
+
+### Horizontal controller scaling
+
+Run multiple controller instances behind a load balancer:
+
+```bash
+# Controller 1
+pupload controller --config /etc/pupload/controller.yaml
+
+# Controller 2  
+pupload controller --config /etc/pupload/controller.yaml
+
+# Controller 3
+pupload controller --config /etc/pupload/controller.yaml
+```
+
+All controllers share state via Redis, ensuring consistent behavior.
+
+### Heterogeneous worker pools
+
+Deploy workers with different resource profiles:
+
+```yaml
+# CPU-optimized worker
+Resources:
+  MaxCPU: "32"
+  MaxMemory: "64gb"
+  MaxStorage: "500gb"
+```
+
+```yaml
+# GPU worker
+Resources:
+  MaxCPU: "16"
+  MaxMemory: "96gb"
+  MaxStorage: "1tb"
+Runtime:
+  EnableGPUSupport: true
+```
+
+```yaml
+# Memory-optimized worker
+Resources:
+  MaxCPU: "8"
+  MaxMemory: "128gb"
+  MaxStorage: "250gb"
+```
+
+Workers automatically advertise their capabilities, and the controller schedules nodes appropriately.
+
+<Warning>
+Ensure your Redis instance is properly sized for your workload. High-throughput deployments may need Redis clustering or a managed Redis service.
+</Warning>
+
+## Security considerations
+
+### Container isolation
+
+Workers run nodes in isolated containers:
+
+```go
+containerID, err := n.CS.RT.CreateContainer(ctx, cont.ContainerConfig{
+    Image: payload.NodeDef.Image,
+    Name:  fmt.Sprintf("pupload-%s-%s", payload.RunID, payload.Node.ID),
+    Cmd:   command,
+
+    HostConfig: &container.HostConfig{
+        AutoRemove: false,
+        Resources:  resource,
+    },
+})
+```
+
+From `internal/worker/node/execute.go:60-69`
+
+### Image security
+
+Workers can restrict which registries and images are allowed:
+
+```go
+type SecuritySettings struct {
+    AllowedRegistries []string // all if empty
+    ImageAllowlist    []string
+    ImageBlocklist    []string
+}
+```
+
+From `internal/worker/config/config.go:45-49`
+
+```yaml
+Security:
+  AllowedRegistries:
+    - docker.io
+    - ghcr.io
+    - gcr.io
+    - public.ecr.aws
+  ImageBlocklist:
+    - "*:latest"  # Prevent latest tags for reproducibility
+```
+
+<Tip>
+For enhanced security, consider using gVisor runtime isolation to provide additional sandboxing beyond standard containers.
+</Tip>
+
+## Observability
+
+### Logging
+
+Both controllers and workers use structured logging:
+
+```go
+logging.Init(logging.Config{
+    AppName: "pupload.controller",
+    Level:   slog.LevelInfo,
+    Format:  "text",
+})
+```
+
+From `internal/controller/controller.go:95-99`
+
+### Telemetry
+
+Pupload supports OpenTelemetry for distributed tracing:
+
+```go
+ctx, span := telemetry.Tracer("pupload.worker").Start(ctx, "NodeExecute")
+defer span.End()
+span.SetAttributes(
+    attribute.String("node_id", payload.Node.ID),
+    attribute.String("container_image", payload.NodeDef.Image),
+    attribute.String("tier", payload.NodeDef.Tier),
+)
+```
+
+From `internal/worker/node/execute.go:24-30`
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Flows" icon="diagram-project" href="/concepts/flows">
+    Learn how controllers orchestrate flows
+  </Card>
+  <Card title="Resources" icon="microchip" href="/concepts/resources">
+    Understand worker resource management
+  </Card>
+</CardGroup>

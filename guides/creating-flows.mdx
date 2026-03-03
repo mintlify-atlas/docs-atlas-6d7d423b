@@ -1,0 +1,392 @@
+---
+title: Creating flows
+description: Learn how to create and structure flows in Pupload to build data processing pipelines
+---
+
+Flows are the core concept in Pupload that define how data moves through your processing pipeline. A flow consists of stores, data wells, and nodes that work together to process your data.
+
+## Flow structure
+
+A flow is defined in YAML and contains the following components:
+
+- **Name**: A unique identifier for your flow
+- **Stores**: Storage backends for input and output data
+- **DataWells**: Definitions of where data is sourced from and stored
+- **Nodes**: Processing units that transform data
+- **Timeout**: Optional timeout for the entire flow
+
+## Basic flow example
+
+Here's a simple flow that processes video files:
+
+```yaml
+Name: videoProcessing
+
+Stores:
+  - Name: FileStore
+    Type: s3fs
+    Params:
+      BucketName: video-storage
+      MountPath: /data/videos
+      
+DefaultStore: FileStore
+
+DataWells:
+  - Store: FileStore
+    Edge: video_input
+    Type: dynamic
+
+Nodes:
+  - ID: encode-node
+    DefName: github.com/pupload/pupload/ffmpeg
+    Inputs:
+      - Name: VideoStream
+        Edge: video_input
+    Outputs:
+      - Name: VideoOut
+        Edge: compressed_output
+    Flags:
+      - Name: Quality
+        Value: high
+    Command: Encode
+```
+
+## Step-by-step guide
+
+<Steps>
+  <Step title="Define your flow name">
+    Start by giving your flow a unique, descriptive name:
+
+    ```yaml
+    Name: myDataPipeline
+    ```
+  </Step>
+
+  <Step title="Configure storage backends">
+    Define the stores that will hold your input and output data. See the [storage backends guide](/guides/storage-backends) for detailed configuration options:
+
+    ```yaml
+    Stores:
+      - Name: InputStore
+        Type: s3
+        Params:
+          Endpoint: s3.amazonaws.com
+          BucketName: my-input-bucket
+          AccessKey: ${AWS_ACCESS_KEY}
+          SecretKey: ${AWS_SECRET_KEY}
+      
+      - Name: OutputStore
+        Type: s3
+        Params:
+          Endpoint: s3.amazonaws.com
+          BucketName: my-output-bucket
+          AccessKey: ${AWS_ACCESS_KEY}
+          SecretKey: ${AWS_SECRET_KEY}
+    ```
+
+    <Tip>
+      You can use environment variables in your configuration with `${VARIABLE_NAME}` syntax.
+    </Tip>
+  </Step>
+
+  <Step title="Set a default store">
+    Specify which store should be used by default for data wells that don't specify one:
+
+    ```yaml
+    DefaultStore: InputStore
+    ```
+  </Step>
+
+  <Step title="Define data wells">
+    Data wells specify where data should be sourced from and stored on specific edges:
+
+    ```yaml
+    DataWells:
+      - Store: InputStore
+        Edge: raw_data
+        Type: dynamic
+      
+      - Store: OutputStore
+        Edge: processed_data
+        Type: dynamic
+    ```
+
+    The `Edge` field references the input/output edges defined in your nodes.
+  </Step>
+
+  <Step title="Add processing nodes">
+    Define the nodes that will process your data. Each node must reference a node definition:
+
+    ```yaml
+    Nodes:
+      - ID: processor-1
+        DefName: github.com/myorg/myprocessor
+        Inputs:
+          - Name: DataIn
+            Edge: raw_data
+        Outputs:
+          - Name: DataOut
+            Edge: processed_data
+        Flags:
+          - Name: Mode
+            Value: fast
+        Command: Process
+    ```
+
+    <Info>
+      Node definitions must be published and available before you can reference them in a flow. See the [custom nodes guide](/guides/custom-nodes) for more information.
+    </Info>
+  </Step>
+
+  <Step title="Set timeout (optional)">
+    Add a timeout to prevent flows from running indefinitely:
+
+    ```yaml
+    Timeout: "30m"
+    ```
+
+    Supported time units: `s` (seconds), `m` (minutes), `h` (hours).
+  </Step>
+</Steps>
+
+## Advanced flow patterns
+
+### Multi-stage processing
+
+You can chain multiple nodes together by connecting their edges:
+
+```yaml
+Nodes:
+  - ID: stage-1
+    DefName: github.com/myorg/preprocessor
+    Inputs:
+      - Name: RawData
+        Edge: input_data
+    Outputs:
+      - Name: CleanedData
+        Edge: cleaned_data
+    Command: Clean
+  
+  - ID: stage-2
+    DefName: github.com/myorg/analyzer
+    Inputs:
+      - Name: InputData
+        Edge: cleaned_data
+    Outputs:
+      - Name: Results
+        Edge: analysis_results
+    Command: Analyze
+```
+
+### Multiple inputs and outputs
+
+Nodes can have multiple inputs and outputs:
+
+```yaml
+Nodes:
+  - ID: merger
+    DefName: github.com/myorg/merger
+    Inputs:
+      - Name: StreamA
+        Edge: source_a
+      - Name: StreamB
+        Edge: source_b
+    Outputs:
+      - Name: MergedStream
+        Edge: merged_output
+      - Name: Metadata
+        Edge: merge_metadata
+    Command: Merge
+```
+
+### Using multiple stores
+
+Different data wells can use different storage backends:
+
+```yaml
+Stores:
+  - Name: FastStore
+    Type: s3fs
+    Params:
+      BucketName: fast-local
+      MountPath: /tmp/fast
+  
+  - Name: ArchiveStore
+    Type: s3
+    Params:
+      Endpoint: s3.amazonaws.com
+      BucketName: long-term-archive
+      AccessKey: ${AWS_ACCESS_KEY}
+      SecretKey: ${AWS_SECRET_KEY}
+
+DataWells:
+  - Store: FastStore
+    Edge: temp_processing
+  
+  - Store: ArchiveStore
+    Edge: final_output
+```
+
+## Flow validation
+
+<Warning>
+  Before deploying your flow, validate it to catch configuration errors early.
+</Warning>
+
+Pupload validates flows to ensure:
+
+- All referenced node definitions exist
+- All edges are properly connected
+- Store configurations are valid
+- Required inputs and outputs are satisfied
+
+## Node configuration
+
+### Node ID
+
+Each node must have a unique ID within the flow:
+
+```yaml
+ID: unique-node-id
+```
+
+### Node definition reference
+
+The `DefName` field references a published node definition using the format:
+
+```yaml
+DefName: github.com/publisher/nodename
+```
+
+### Inputs and outputs
+
+Connect node inputs and outputs to data wells via edges:
+
+```yaml
+Inputs:
+  - Name: VideoStream  # Must match input name in node definition
+    Edge: video_input  # References a data well edge
+
+Outputs:
+  - Name: VideoOut     # Must match output name in node definition
+    Edge: processed_video
+```
+
+### Flags
+
+Pass configuration flags to nodes:
+
+```yaml
+Flags:
+  - Name: Quality
+    Value: "high"
+  - Name: Threads
+    Value: "4"
+```
+
+<Note>
+  Flag names and types must match those defined in the node definition.
+</Note>
+
+### Commands
+
+Specify which command to execute from the node definition:
+
+```yaml
+Command: Encode
+```
+
+## Complete example
+
+Here's a complete flow that transcodes videos with different quality settings:
+
+```yaml
+Name: videoTranscoding
+
+Timeout: "1h"
+
+Stores:
+  - Name: SourceStore
+    Type: s3
+    Params:
+      Endpoint: s3.amazonaws.com
+      BucketName: raw-videos
+      AccessKey: ${AWS_ACCESS_KEY}
+      SecretKey: ${AWS_SECRET_KEY}
+      Secure: true
+  
+  - Name: OutputStore
+    Type: s3
+    Params:
+      Endpoint: s3.amazonaws.com
+      BucketName: transcoded-videos
+      AccessKey: ${AWS_ACCESS_KEY}
+      SecretKey: ${AWS_SECRET_KEY}
+      Secure: true
+
+DefaultStore: SourceStore
+
+DataWells:
+  - Store: SourceStore
+    Edge: raw_video
+    Type: dynamic
+  
+  - Store: OutputStore
+    Edge: hd_output
+    Type: dynamic
+  
+  - Store: OutputStore
+    Edge: sd_output
+    Type: dynamic
+
+Nodes:
+  - ID: hd-encoder
+    DefName: github.com/pupload/pupload/ffmpeg
+    Inputs:
+      - Name: VideoStream
+        Edge: raw_video
+    Outputs:
+      - Name: VideoOut
+        Edge: hd_output
+    Flags:
+      - Name: Resolution
+        Value: "1920x1080"
+      - Name: Bitrate
+        Value: "5000k"
+    Command: Encode
+  
+  - ID: sd-encoder
+    DefName: github.com/pupload/pupload/ffmpeg
+    Inputs:
+      - Name: VideoStream
+        Edge: raw_video
+    Outputs:
+      - Name: VideoOut
+        Edge: sd_output
+    Flags:
+      - Name: Resolution
+        Value: "854x480"
+      - Name: Bitrate
+        Value: "1500k"
+    Command: Encode
+```
+
+## Best practices
+
+<Tip>
+  Follow these best practices for robust, maintainable flows:
+</Tip>
+
+1. **Use descriptive names**: Give flows, nodes, and edges meaningful names that describe their purpose
+2. **Set appropriate timeouts**: Prevent runaway flows by setting realistic timeouts
+3. **Separate concerns**: Use different stores for different purposes (temporary data, archives, outputs)
+4. **Validate early**: Always validate flows before deploying to production
+5. **Document dependencies**: Keep track of which node definitions your flow depends on
+6. **Use environment variables**: Keep sensitive data like credentials out of flow definitions
+
+## Next steps
+
+- Learn how to create [custom node definitions](/guides/custom-nodes)
+- Configure [storage backends](/guides/storage-backends) for your data
+- Understand [resource tiers](/guides/resource-tiers) for node execution
+- Deploy your flows with the [deployment guide](/guides/deployment)

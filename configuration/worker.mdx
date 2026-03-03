@@ -1,0 +1,482 @@
+---
+title: Worker configuration
+description: Configure Pupload workers with worker.yaml
+---
+
+Workers execute flow tasks in containers. Each worker can subscribe to specific resource tiers (CPU, memory, GPU) and only processes tasks matching its capabilities.
+
+Configure workers using `worker.yaml` in one of these locations:
+
+- `$PUPLOAD_CONFIG/worker.yaml`
+- `/etc/pupload/worker.yaml`
+- `$HOME/.config/pupload/worker.yaml`
+- `$HOME/.pupload/worker.yaml`
+
+## Complete example
+
+<CodeGroup>
+```yaml worker.yaml
+Worker:
+  ID: worker-1
+
+SyncPlane:
+  SelectedSyncPlane: redis
+  Redis:
+    Address: localhost:6379
+    Password: ""
+    DB: 0
+    PoolSize: 10
+    MaxRetries: 3
+
+Telemetry:
+  Enabled: true
+  Exporter: otlp
+  Endpoint: localhost:4317
+  Insecure: true
+  SampleRate: 1.0
+
+Resources:
+  MaxCPU: auto
+  MaxMemory: auto
+  MaxStorage: auto
+  AllowedGPUs: []
+
+Runtime:
+  ContainerEngine: auto
+  ContainerRuntime: auto
+  EnableGPUSupport: false
+  Gvisor:
+    Platform: systrap
+
+Logging:
+  LogLevel: warn
+
+Security:
+  AllowedRegistries:
+    - docker.io
+    - ghcr.io
+    - gcr.io
+    - public.ecr.aws
+  ImageAllowlist: []
+  ImageBlocklist: []
+```
+
+```yaml Minimal
+Worker:
+  ID: worker-1
+
+SyncPlane:
+  Redis:
+    Address: localhost:6379
+
+Resources:
+  MaxCPU: 4
+  MaxMemory: 8gb
+  MaxStorage: 100gb
+```
+
+```yaml GPU worker
+Worker:
+  ID: gpu-worker-1
+
+SyncPlane:
+  Redis:
+    Address: localhost:6379
+
+Resources:
+  MaxCPU: 16
+  MaxMemory: 64gb
+  MaxStorage: 500gb
+
+Runtime:
+  ContainerEngine: docker
+  EnableGPUSupport: true
+```
+</CodeGroup>
+
+## Configuration reference
+
+### Worker
+
+Basic worker identification settings.
+
+<ParamField path="Worker.ID" type="string">
+  Unique identifier for this worker. Used for logging and monitoring. If not specified, a random ID will be generated.
+  
+  <Note>
+  In production, set explicit IDs for easier debugging and monitoring.
+  </Note>
+</ParamField>
+
+### SyncPlane
+
+Connects the worker to the controller's message queue for task distribution.
+
+<ParamField path="SyncPlane.SelectedSyncPlane" type="string" default="redis">
+  Sync plane implementation. Currently only `redis` is supported.
+</ParamField>
+
+<ParamField path="SyncPlane.Redis.Address" type="string" default="localhost:6379">
+  Redis server address in `host:port` format. Must match the controller's Redis instance.
+</ParamField>
+
+<ParamField path="SyncPlane.Redis.Password" type="string" default="">
+  Redis password for authentication.
+</ParamField>
+
+<ParamField path="SyncPlane.Redis.DB" type="integer" default="0">
+  Redis database number. Must match the controller's configuration.
+</ParamField>
+
+<ParamField path="SyncPlane.Redis.PoolSize" type="integer" default="10">
+  Maximum number of Redis connections in the pool.
+</ParamField>
+
+<ParamField path="SyncPlane.Redis.MaxRetries" type="integer" default="3">
+  Maximum retries for failed Redis operations.
+</ParamField>
+
+### Telemetry
+
+OpenTelemetry configuration for distributed tracing.
+
+<ParamField path="Telemetry.Enabled" type="boolean" default="false">
+  Enable telemetry collection from this worker.
+</ParamField>
+
+<ParamField path="Telemetry.Exporter" type="string" default="none">
+  Telemetry exporter:
+  - `otlp` - OpenTelemetry Protocol endpoint
+  - `stdout` - Print to stdout
+  - `none` - Disable telemetry
+</ParamField>
+
+<ParamField path="Telemetry.Endpoint" type="string">
+  OTLP endpoint for telemetry export.
+</ParamField>
+
+<ParamField path="Telemetry.Insecure" type="boolean" default="false">
+  Use non-TLS connection to telemetry endpoint.
+</ParamField>
+
+<ParamField path="Telemetry.SampleRate" type="float" default="1.0">
+  Trace sampling rate (0.0 to 1.0).
+</ParamField>
+
+<ParamField path="Telemetry.Headers" type="object">
+  Additional headers for telemetry export.
+</ParamField>
+
+### Resources
+
+Define the maximum resources this worker can allocate to tasks. Workers automatically subscribe to resource tiers they can handle.
+
+<ParamField path="Resources.MaxCPU" type="string" default="auto">
+  Maximum CPU cores available to this worker.
+  - `auto` - Detect all available CPU cores
+  - `4` - Limit to 4 cores
+  - `16` - Limit to 16 cores
+</ParamField>
+
+<ParamField path="Resources.MaxMemory" type="string" default="auto">
+  Maximum memory available to this worker.
+  - `auto` - Detect all available memory
+  - `8gb` - Limit to 8 gigabytes
+  - `512mb` - Limit to 512 megabytes
+  - `16gb` - Limit to 16 gigabytes
+  
+  Supports units: `b`, `kb`, `mb`, `gb`, `tb`
+</ParamField>
+
+<ParamField path="Resources.MaxStorage" type="string" default="auto">
+  Maximum storage available for task artifacts.
+  - `auto` - Use all available disk space
+  - `100gb` - Limit to 100 gigabytes
+  - `1tb` - Limit to 1 terabyte
+  
+  Supports units: `b`, `kb`, `mb`, `gb`, `tb`
+</ParamField>
+
+<ParamField path="Resources.AllowedGPUs" type="array">
+  List of GPU PCI addresses this worker can use. Empty array means no GPU tasks.
+  
+  ```yaml
+  AllowedGPUs:
+    - "0000:01:00.0"
+    - "0000:02:00.0"
+  ```
+</ParamField>
+
+<Note>
+Workers automatically subscribe to resource tier queues based on their available resources:
+- CPU tiers: `c-small`, `c-medium`, `c-large`
+- Memory tiers: `m-small`, `m-medium`, `m-large`
+- GPU tiers: `g-small`, `g-medium`, `g-large`
+- Vendor-specific: `gn-*` (NVIDIA), `ga-*` (AMD), `gi-*` (Intel)
+</Note>
+
+### Runtime
+
+Configure the container runtime for executing tasks.
+
+<ParamField path="Runtime.ContainerEngine" type="string" default="auto">
+  Container engine to use:
+  - `auto` - Automatically detect (tries Docker, then Podman)
+  - `docker` - Use Docker
+  - `podman` - Use Podman
+  - `runsc` - Use gVisor's runsc directly
+</ParamField>
+
+<ParamField path="Runtime.ContainerRuntime" type="string" default="auto">
+  Low-level container runtime:
+  - `auto` - Use default for the engine
+  - `runc` - Standard OCI runtime
+  - `gvisor` - Google's gVisor for enhanced isolation
+</ParamField>
+
+<ParamField path="Runtime.EnableGPUSupport" type="boolean" default="false">
+  Enable GPU passthrough to containers. Requires NVIDIA Container Toolkit, ROCm, or similar GPU container runtime.
+  
+  <Warning>
+  Ensure GPU drivers and container runtime are properly configured before enabling.
+  </Warning>
+</ParamField>
+
+<ParamField path="Runtime.Gvisor.Platform" type="string" default="systrap">
+  gVisor platform when using `gvisor` runtime:
+  - `systrap` - System call trapping (recommended, best compatibility)
+  - `kvm` - KVM-based virtualization (better performance, requires KVM)
+  - `ptrace` - Process tracing (legacy, slower)
+</ParamField>
+
+### Logging
+
+<ParamField path="Logging.LogLevel" type="string" default="warn">
+  Logging verbosity level:
+  - `debug` - Verbose debugging information
+  - `info` - General informational messages
+  - `warn` - Warning messages only
+  - `error` - Error messages only
+</ParamField>
+
+### Security
+
+Restrict which container images this worker can execute.
+
+<ParamField path="Security.AllowedRegistries" type="array">
+  List of container registries workers can pull images from. Empty array allows all registries.
+  
+  ```yaml
+  AllowedRegistries:
+    - docker.io
+    - ghcr.io
+    - gcr.io
+    - your-registry.company.com
+  ```
+  
+  Default registries:
+  - `docker.io`
+  - `ghcr.io`
+  - `gcr.io`
+  - `public.ecr.aws`
+</ParamField>
+
+<ParamField path="Security.ImageAllowlist" type="array">
+  Explicit list of allowed images. If set, only these images can be executed. Takes precedence over blocklist.
+  
+  ```yaml
+  ImageAllowlist:
+    - linuxserver/ffmpeg:latest
+    - mycompany/processor:v1.0
+  ```
+</ParamField>
+
+<ParamField path="Security.ImageBlocklist" type="array">
+  List of blocked images that cannot be executed.
+  
+  ```yaml
+  ImageBlocklist:
+    - untrusted/malicious:latest
+    - old-image:vulnerable
+  ```
+</ParamField>
+
+<Warning>
+For production environments, always configure `AllowedRegistries` or `ImageAllowlist` to prevent unauthorized image execution.
+</Warning>
+
+## Resource tiers
+
+Pupload uses standardized resource tiers. Workers automatically subscribe to tiers they can support:
+
+<Tabs>
+  <Tab title="CPU tiers">
+    | Tier | CPU Cores | Memory | Use case |
+    |------|-----------|--------|----------|
+    | `c-small` | 1-2 | 2GB | Light processing |
+    | `c-medium` | 4 | 4GB | Standard tasks |
+    | `c-large` | 8+ | 8GB+ | Heavy processing |
+  </Tab>
+  
+  <Tab title="Memory tiers">
+    | Tier | Memory | CPU | Use case |
+    |------|--------|-----|----------|
+    | `m-small` | 4GB | 2 | Memory-intensive light |
+    | `m-medium` | 16GB | 4 | Large file processing |
+    | `m-large` | 32GB+ | 8+ | Very large datasets |
+  </Tab>
+  
+  <Tab title="GPU tiers">
+    | Tier | GPU Memory | Use case |
+    |------|------------|----------|
+    | `g-small` | 4GB | Light ML inference |
+    | `g-medium` | 8-12GB | Standard ML models |
+    | `g-large` | 16GB+ | Large ML models, training |
+    | `gn-*` | Any | NVIDIA-specific |
+    | `ga-*` | Any | AMD-specific |
+    | `gi-*` | Any | Intel-specific |
+  </Tab>
+</Tabs>
+
+## Worker configurations by use case
+
+<Tabs>
+  <Tab title="CPU-only worker">
+    ```yaml
+    Worker:
+      ID: cpu-worker-1
+    
+    SyncPlane:
+      Redis:
+        Address: controller.internal:6379
+    
+    Resources:
+      MaxCPU: 8
+      MaxMemory: 16gb
+      MaxStorage: 200gb
+    
+    Runtime:
+      ContainerEngine: docker
+      ContainerRuntime: runc
+    
+    Logging:
+      LogLevel: info
+    
+    Security:
+      AllowedRegistries:
+        - docker.io
+        - ghcr.io
+    ```
+    
+    Subscribes to: `c-small`, `c-medium`, `m-small`
+  </Tab>
+  
+  <Tab title="GPU worker">
+    ```yaml
+    Worker:
+      ID: gpu-worker-1
+    
+    SyncPlane:
+      Redis:
+        Address: controller.internal:6379
+    
+    Resources:
+      MaxCPU: 16
+      MaxMemory: 64gb
+      MaxStorage: 1tb
+      AllowedGPUs:
+        - "0000:01:00.0"
+    
+    Runtime:
+      ContainerEngine: docker
+      EnableGPUSupport: true
+    
+    Logging:
+      LogLevel: info
+    ```
+    
+    Subscribes to: All CPU/memory tiers + `g-small`, `g-medium`, `g-large`, `gn-*`
+  </Tab>
+  
+  <Tab title="Secure worker">
+    ```yaml
+    Worker:
+      ID: secure-worker-1
+    
+    SyncPlane:
+      Redis:
+        Address: controller.internal:6379
+        Password: ${REDIS_PASSWORD}
+    
+    Resources:
+      MaxCPU: 4
+      MaxMemory: 8gb
+      MaxStorage: 100gb
+    
+    Runtime:
+      ContainerEngine: docker
+      ContainerRuntime: gvisor
+      Gvisor:
+        Platform: systrap
+    
+    Logging:
+      LogLevel: warn
+    
+    Security:
+      ImageAllowlist:
+        - linuxserver/ffmpeg:latest
+        - mycompany/processor:v1.0
+        - mycompany/encoder:v2.1
+    ```
+    
+    Uses gVisor for enhanced container isolation and restricts to approved images only.
+  </Tab>
+  
+  <Tab title="Development worker">
+    ```yaml
+    Worker:
+      ID: dev-worker
+    
+    SyncPlane:
+      Redis:
+        Address: localhost:6379
+    
+    Resources:
+      MaxCPU: auto
+      MaxMemory: auto
+      MaxStorage: auto
+    
+    Runtime:
+      ContainerEngine: auto
+    
+    Logging:
+      LogLevel: debug
+    ```
+    
+    Simple configuration for local development with maximum logging.
+  </Tab>
+</Tabs>
+
+## Environment variables
+
+```bash
+# Set config directory
+export PUPLOAD_CONFIG=/etc/pupload
+
+# Set Redis password from environment
+export REDIS_PASSWORD=secret
+
+# Start worker
+pup worker start
+```
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Controller configuration" icon="brain" href="/configuration/controller">
+    Configure the controller
+  </Card>
+  <Card title="Flow schema" icon="diagram-project" href="/configuration/flow-schema">
+    Define processing flows
+  </Card>
+</CardGroup>

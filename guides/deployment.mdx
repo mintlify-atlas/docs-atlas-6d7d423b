@@ -1,0 +1,857 @@
+---
+title: Deployment
+description: Learn how to deploy Pupload controllers and workers for production use
+---
+
+Pupload consists of two main components that need to be deployed: the controller (orchestrator) and workers (execution nodes). This guide covers how to configure and deploy both.
+
+## Architecture overview
+
+Pupload uses a controller-worker architecture:
+
+- **Controller**: Orchestrates flows, manages state, and provides the API
+- **Workers**: Execute node containers and report available resources
+- **Sync plane**: Coordinates communication (typically Redis)
+
+```
+┌─────────────┐
+│  Controller │
+│   (Port     │
+│    1234)    │
+└──────┬──────┘
+       │
+       │  Redis (Sync Plane)
+       │
+   ┌───┴────┬────────┬────────┐
+   │        │        │        │
+┌──▼───┐ ┌─▼────┐ ┌─▼────┐ ┌─▼────┐
+│Worker│ │Worker│ │Worker│ │Worker│
+└──────┘ └──────┘ └──────┘ └──────┘
+```
+
+## Prerequisites
+
+<Steps>
+  <Step title="Install dependencies">
+    - Docker or Podman for container execution
+    - Redis for coordination
+    - Go 1.21+ for building from source (optional)
+  </Step>
+
+  <Step title="Prepare configuration directories">
+    Create directories for configuration files:
+
+    ```bash
+    mkdir -p /etc/pupload
+    mkdir -p /var/lib/pupload/data
+    mkdir -p ~/.config/pupload
+    ```
+  </Step>
+
+  <Step title="Set up Redis">
+    Install and start Redis:
+
+    ```bash
+    # Using Docker
+    docker run -d -p 6379:6379 --name pupload-redis redis:7-alpine
+
+    # Or install natively
+    # Ubuntu/Debian
+    sudo apt-get install redis-server
+
+    # macOS
+    brew install redis
+    ```
+  </Step>
+</Steps>
+
+## Controller deployment
+
+The controller manages flows, schedules work, and provides the API interface.
+
+### Controller configuration
+
+Create a configuration file at one of these locations:
+- `$PUPLOAD_CONFIG/controller.yaml`
+- `/etc/pupload/controller.yaml`
+- `~/.config/pupload/controller.yaml`
+- `~/.pupload/controller.yaml`
+
+From internal/controller/config/config.go:26:63:
+
+```yaml
+# Sync plane configuration
+SyncPlane:
+  SelectedSyncPlane: redis
+  Redis:
+    Address: localhost:6379
+    PoolSize: 10
+    MaxRetries: 3
+  ControllerStepInterval: "@every 1s"
+
+# Project repository
+ProjectRepo:
+  Address: localhost:6379
+
+# Runtime repository
+RuntimeRepo:
+  Type: redis
+  Redis:
+    Address: localhost:6379
+
+# Storage
+Storage:
+  DataPath: /var/lib/pupload/data
+
+# Telemetry (optional)
+Telemetry:
+  Enabled: false
+```
+
+### Configuration options
+
+<Tabs>
+  <Tab title="Sync plane">
+    The sync plane coordinates between controller and workers.
+
+    ```yaml
+    SyncPlane:
+      SelectedSyncPlane: redis  # Currently only Redis is supported
+      Redis:
+        Address: redis.example.com:6379
+        PoolSize: 10              # Connection pool size
+        MaxRetries: 3             # Max retry attempts
+        Password: ${REDIS_PASSWORD}  # Optional password
+      ControllerStepInterval: "@every 1s"  # Scheduling interval
+    ```
+
+    <Info>
+      The `ControllerStepInterval` determines how frequently the controller checks for new work to schedule.
+    </Info>
+  </Tab>
+
+  <Tab title="Storage">
+    Configure where the controller stores operational data.
+
+    ```yaml
+    Storage:
+      DataPath: /var/lib/pupload/data
+    ```
+
+    Ensure this path:
+    - Exists and is writable
+    - Has sufficient disk space
+    - Is backed up regularly
+  </Tab>
+
+  <Tab title="Repositories">
+    Configure Redis-backed repositories for projects and runtime state.
+
+    ```yaml
+    ProjectRepo:
+      Address: localhost:6379
+      Password: ${REDIS_PASSWORD}
+
+    RuntimeRepo:
+      Type: redis
+      Redis:
+        Address: localhost:6379
+        Password: ${REDIS_PASSWORD}
+    ```
+  </Tab>
+
+  <Tab title="Telemetry">
+    Optional telemetry configuration for monitoring.
+
+    ```yaml
+    Telemetry:
+      Enabled: true
+      # Additional telemetry settings
+    ```
+  </Tab>
+</Tabs>
+
+### Running the controller
+
+<CodeGroup>
+
+```bash Binary
+# Run the controller
+./pupload-controller
+
+# The controller listens on port 1234 by default
+# Logs will be written to stdout
+```
+
+```bash Docker
+# Build Docker image
+docker build -t pupload-controller -f cmd/controller/Dockerfile .
+
+# Run container
+docker run -d \
+  --name pupload-controller \
+  -p 1234:1234 \
+  -v /etc/pupload/controller.yaml:/etc/pupload/controller.yaml \
+  -v /var/lib/pupload/data:/var/lib/pupload/data \
+  pupload-controller
+```
+
+```yaml Docker Compose
+version: '3.8'
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  controller:
+    build:
+      context: .
+      dockerfile: cmd/controller/Dockerfile
+    ports:
+      - "1234:1234"
+    volumes:
+      - ./controller.yaml:/etc/pupload/controller.yaml
+      - controller-data:/var/lib/pupload/data
+    depends_on:
+      - redis
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+
+volumes:
+  redis-data:
+  controller-data:
+```
+
+```yaml Kubernetes
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: controller-config
+data:
+  controller.yaml: |
+    SyncPlane:
+      SelectedSyncPlane: redis
+      Redis:
+        Address: redis:6379
+        PoolSize: 10
+    Storage:
+      DataPath: /var/lib/pupload/data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pupload-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pupload-controller
+  template:
+    metadata:
+      labels:
+        app: pupload-controller
+    spec:
+      containers:
+      - name: controller
+        image: pupload/controller:latest
+        ports:
+        - containerPort: 1234
+        volumeMounts:
+        - name: config
+          mountPath: /etc/pupload
+        - name: data
+          mountPath: /var/lib/pupload/data
+      volumes:
+      - name: config
+        configMap:
+          name: controller-config
+      - name: data
+        persistentVolumeClaim:
+          claimName: controller-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pupload-controller
+spec:
+  selector:
+    app: pupload-controller
+  ports:
+  - port: 1234
+    targetPort: 1234
+```
+
+</CodeGroup>
+
+### Controller startup
+
+From cmd/controller/main.go:9:13:
+
+```go
+func main() {
+    if err := controller.Run(); err != nil {
+        fmt.Printf("error running controller: %s", err)
+    }
+}
+```
+
+The controller:
+1. Loads configuration from standard locations
+2. Initializes telemetry (if enabled)
+3. Connects to the sync plane (Redis)
+4. Starts flow and project services
+5. Launches HTTP server on port 1234
+
+## Worker deployment
+
+Workers execute node containers and must have container runtime access.
+
+### Worker configuration
+
+Create a configuration file at one of these locations:
+- `$PUPLOAD_CONFIG/worker.yaml`
+- `/etc/pupload/worker.yaml`
+- `~/.config/pupload/worker.yaml`
+- `~/.pupload/worker.yaml`
+
+From internal/worker/config/config.go:76:100:
+
+```yaml
+# Worker identity
+Worker:
+  ID: worker-01  # Unique worker identifier
+
+# Sync plane configuration
+SyncPlane:
+  SelectedSyncPlane: redis
+  Redis:
+    Address: localhost:6379
+    PoolSize: 10
+    MaxRetries: 3
+
+# Resource limits
+Resources:
+  MaxCPU: "auto"        # auto or number of cores
+  MaxMemory: "auto"     # auto or size (e.g., "32gb")
+  MaxStorage: "auto"    # auto or size (e.g., "500gb")
+
+# Container runtime
+Runtime:
+  ContainerEngine: auto    # docker, podman, or auto
+  ContainerRuntime: auto   # runc, gvisor, or auto
+  EnableGPUSupport: false
+  Gvisor:
+    Platform: systrap      # systrap, kvm, or ptrace
+
+# Logging
+Logging:
+  LogLevel: warn  # debug, info, warn, error
+
+# Security
+Security:
+  AllowedRegistries:
+    - docker.io
+    - ghcr.io
+    - gcr.io
+    - public.ecr.aws
+  ImageAllowlist: []  # Specific images to allow
+  ImageBlocklist: []  # Specific images to block
+```
+
+### Configuration options
+
+<Tabs>
+  <Tab title="Worker identity">
+    Each worker needs a unique identifier.
+
+    ```yaml
+    Worker:
+      ID: worker-${HOSTNAME}  # Use hostname or custom ID
+    ```
+  </Tab>
+
+  <Tab title="Resources">
+    Configure resource limits for the worker.
+
+    ```yaml
+    Resources:
+      MaxCPU: "16"        # 16 CPU cores
+      MaxMemory: "64gb"   # 64 GB RAM
+      MaxStorage: "1tb"   # 1 TB storage
+    ```
+
+    Use `"auto"` to automatically detect system resources:
+
+    ```yaml
+    Resources:
+      MaxCPU: "auto"
+      MaxMemory: "auto"
+      MaxStorage: "auto"
+    ```
+
+    <Tip>
+      Auto-detection is recommended for dynamic environments like cloud instances.
+    </Tip>
+  </Tab>
+
+  <Tab title="Runtime">
+    Configure the container execution environment.
+
+    ```yaml
+    Runtime:
+      ContainerEngine: docker    # or podman
+      ContainerRuntime: runc     # or gvisor for isolation
+      EnableGPUSupport: true     # Enable GPU passthrough
+      Gvisor:
+        Platform: systrap        # Best performance for most workloads
+    ```
+
+    **Container engines**:
+    - `docker`: Standard Docker engine
+    - `podman`: Rootless alternative
+    - `auto`: Detect available engine
+
+    **Container runtimes**:
+    - `runc`: Standard OCI runtime
+    - `gvisor`: Enhanced isolation (use with untrusted code)
+    - `auto`: Use default for selected engine
+
+    **gVisor platforms**:
+    - `systrap`: Best performance, Linux 4.14+
+    - `kvm`: Hardware virtualization
+    - `ptrace`: Maximum compatibility, slower
+  </Tab>
+
+  <Tab title="Security">
+    Control which images can be executed.
+
+    ```yaml
+    Security:
+      # Allow only specific registries
+      AllowedRegistries:
+        - docker.io
+        - ghcr.io
+        - my-registry.example.com
+      
+      # Allow specific images (takes precedence)
+      ImageAllowlist:
+        - docker.io/library/alpine:*
+        - ghcr.io/myorg/myimage:*
+      
+      # Block specific images
+      ImageBlocklist:
+        - "*/dangerous-image:*"
+    ```
+
+    <Warning>
+      If `AllowedRegistries` is empty, all registries are allowed. Set this explicitly in production.
+    </Warning>
+  </Tab>
+
+  <Tab title="Logging">
+    Configure logging verbosity.
+
+    ```yaml
+    Logging:
+      LogLevel: info  # debug, info, warn, error
+    ```
+
+    - `debug`: Verbose output for troubleshooting
+    - `info`: Standard operational logs
+    - `warn`: Warnings and errors only (default)
+    - `error`: Errors only
+  </Tab>
+</Tabs>
+
+### GPU support
+
+To enable GPU support on workers:
+
+<Steps>
+  <Step title="Install GPU drivers">
+    Install appropriate drivers for your GPU vendor:
+
+    ```bash
+    # NVIDIA
+    # Install NVIDIA drivers and nvidia-docker2
+    
+    # AMD
+    # Install ROCm drivers
+    
+    # Intel
+    # Install Intel GPU drivers
+    ```
+  </Step>
+
+  <Step title="Configure container runtime">
+    For Docker with NVIDIA GPUs:
+
+    ```bash
+    # Install nvidia-container-toolkit
+    distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+    curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
+    curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | \
+      sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+    
+    sudo apt-get update
+    sudo apt-get install -y nvidia-container-toolkit
+    sudo systemctl restart docker
+    ```
+  </Step>
+
+  <Step title="Enable in worker config">
+    ```yaml
+    Runtime:
+      EnableGPUSupport: true
+    ```
+  </Step>
+
+  <Step title="Verify detection">
+    The worker will automatically detect available GPUs on startup.
+  </Step>
+</Steps>
+
+### Running workers
+
+<CodeGroup>
+
+```bash Binary
+# Run a single worker
+./pupload-worker
+
+# Run multiple workers (different hosts or containers)
+# Ensure each has a unique Worker.ID
+```
+
+```bash Docker
+# Build Docker image
+docker build -t pupload-worker -f cmd/worker/Dockerfile .
+
+# Run worker with Docker socket mounted
+docker run -d \
+  --name pupload-worker-01 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /etc/pupload/worker.yaml:/etc/pupload/worker.yaml \
+  -e WORKER_ID=worker-01 \
+  pupload-worker
+
+# For GPU support, add --gpus all
+docker run -d \
+  --name pupload-worker-gpu \
+  --gpus all \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /etc/pupload/worker.yaml:/etc/pupload/worker.yaml \
+  pupload-worker
+```
+
+```yaml Docker Compose
+version: '3.8'
+services:
+  worker-01:
+    build:
+      context: .
+      dockerfile: cmd/worker/Dockerfile
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./worker.yaml:/etc/pupload/worker.yaml
+    environment:
+      - WORKER_ID=worker-01
+    depends_on:
+      - redis
+
+  worker-02:
+    build:
+      context: .
+      dockerfile: cmd/worker/Dockerfile
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./worker.yaml:/etc/pupload/worker.yaml
+    environment:
+      - WORKER_ID=worker-02
+    depends_on:
+      - redis
+
+  # GPU worker
+  worker-gpu:
+    build:
+      context: .
+      dockerfile: cmd/worker/Dockerfile
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./worker.yaml:/etc/pupload/worker.yaml
+    environment:
+      - WORKER_ID=worker-gpu-01
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+```
+
+```yaml Kubernetes
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pupload-worker
+spec:
+  selector:
+    matchLabels:
+      app: pupload-worker
+  template:
+    metadata:
+      labels:
+        app: pupload-worker
+    spec:
+      containers:
+      - name: worker
+        image: pupload/worker:latest
+        volumeMounts:
+        - name: config
+          mountPath: /etc/pupload
+        - name: docker-sock
+          mountPath: /var/run/docker.sock
+        env:
+        - name: WORKER_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+      volumes:
+      - name: config
+        configMap:
+          name: worker-config
+      - name: docker-sock
+        hostPath:
+          path: /var/run/docker.sock
+```
+
+</CodeGroup>
+
+### Worker startup
+
+From cmd/worker/main.go:9:13:
+
+```go
+func main() {
+    if err := worker.Run(); err != nil {
+        fmt.Printf("error running worker: %s", err)
+    }
+}
+```
+
+The worker:
+1. Loads configuration
+2. Detects available resources (CPU, memory, storage, GPU)
+3. Connects to sync plane (Redis)
+4. Registers available resource tiers
+5. Begins polling for work
+
+## Production deployment
+
+### High availability
+
+<Steps>
+  <Step title="Run multiple controllers">
+    Deploy multiple controller instances behind a load balancer:
+
+    ```yaml
+    # Kubernetes example
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: pupload-controller
+    spec:
+      replicas: 3  # Multiple controller instances
+      # ... rest of configuration
+    ```
+  </Step>
+
+  <Step title="Use Redis Sentinel or Cluster">
+    For production, use Redis in HA mode:
+
+    ```yaml
+    SyncPlane:
+      Redis:
+        # Sentinel configuration
+        Address: redis-sentinel:26379
+        MasterName: pupload
+    ```
+  </Step>
+
+  <Step title="Deploy workers across multiple hosts">
+    Distribute workers for reliability and performance:
+    - Use auto-scaling groups in cloud environments
+    - Deploy as DaemonSets in Kubernetes
+    - Ensure workers are in the same region as storage
+  </Step>
+</Steps>
+
+### Monitoring
+
+Monitor these key metrics:
+
+**Controller**:
+- HTTP request rate and latency
+- Active flows and nodes
+- Redis connection health
+- Queue depth
+
+**Workers**:
+- Resource utilization (CPU, memory, storage)
+- Container execution success rate
+- Available capacity
+- GPU utilization (if applicable)
+
+### Scaling
+
+<Tabs>
+  <Tab title="Horizontal scaling">
+    **Add more workers**:
+    - Increase worker count to handle more concurrent executions
+    - Deploy workers with different resource profiles
+    - Use auto-scaling based on queue depth
+
+    **Add more controllers**:
+    - Scale controller replicas for higher API throughput
+    - Use load balancer for distribution
+  </Tab>
+
+  <Tab title="Vertical scaling">
+    **Larger workers**:
+    - Deploy workers with more CPU/RAM for larger tiers
+    - Add GPU workers for GPU workloads
+    - Increase storage for data-intensive operations
+
+    **Larger Redis**:
+    - Increase Redis memory for larger state
+    - Use Redis Cluster for horizontal scaling
+  </Tab>
+</Tabs>
+
+### Security best practices
+
+<Warning>
+  Follow these security practices for production deployments:
+</Warning>
+
+1. **Network security**:
+   - Use TLS for Redis connections
+   - Restrict controller API access
+   - Use private networks for component communication
+
+2. **Authentication**:
+   - Enable Redis authentication
+   - Use strong passwords
+   - Rotate credentials regularly
+
+3. **Container security**:
+   - Use gVisor for untrusted workloads
+   - Restrict allowed registries
+   - Scan images for vulnerabilities
+   - Run workers as non-root when possible
+
+4. **Secrets management**:
+   - Use environment variables for secrets
+   - Integrate with vault systems (HashiCorp Vault, AWS Secrets Manager)
+   - Never commit secrets to version control
+
+5. **Network isolation**:
+   - Isolate worker networks
+   - Use firewall rules
+   - Implement network policies (Kubernetes)
+
+## Backup and recovery
+
+### What to back up
+
+1. **Controller storage**:
+   - Flow definitions
+   - Operational state
+   - Configuration files
+
+2. **Redis data**:
+   - Enable Redis persistence (RDB/AOF)
+   - Regular backups of Redis dumps
+
+3. **Object storage**:
+   - Enable versioning on S3 buckets
+   - Configure backup retention policies
+
+### Recovery procedures
+
+1. **Controller failure**:
+   - Controller is stateless beyond Redis and storage
+   - Deploy new instance with same configuration
+   - Restore storage data if needed
+
+2. **Worker failure**:
+   - Workers are fully stateless
+   - Simply deploy new workers
+   - In-progress work is rescheduled
+
+3. **Redis failure**:
+   - Restore from Redis backup
+   - Reconfigure controller and workers
+   - May need to restart in-flight operations
+
+## Troubleshooting
+
+### Controller not starting
+
+**Check configuration**:
+```bash
+# Verify config file exists and is valid
+cat /etc/pupload/controller.yaml
+
+# Check Redis connectivity
+redis-cli -h localhost -p 6379 ping
+```
+
+### Workers not registering
+
+**Check worker logs**:
+```bash
+# Check if worker can reach Redis
+redis-cli -h redis-host -p 6379 ping
+
+# Verify worker configuration
+cat /etc/pupload/worker.yaml
+
+# Check worker logs
+docker logs pupload-worker-01
+```
+
+### Containers not starting
+
+**Check Docker socket access**:
+```bash
+# Verify Docker is accessible
+docker ps
+
+# Check worker has access
+docker exec pupload-worker docker ps
+```
+
+### GPU not detected
+
+**Verify GPU availability**:
+```bash
+# NVIDIA
+nvidia-smi
+
+# In container
+docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
+```
+
+## Next steps
+
+- Create your first [flow](/guides/creating-flows)
+- Build [custom nodes](/guides/custom-nodes)
+- Configure [storage backends](/guides/storage-backends)
+- Understand [resource tiers](/guides/resource-tiers)
+- Set up monitoring and alerting
+- Implement CI/CD for flow deployments

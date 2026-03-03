@@ -1,0 +1,254 @@
+---
+title: Image processing
+description: Complete flow for processing uploaded images with thumbnails, watermarks, and multi-resolution outputs
+---
+
+This example demonstrates a common image processing pipeline that takes user uploads, generates thumbnails, applies watermarks, and stores multiple resolutions for different use cases.
+
+## Flow overview
+
+The pipeline processes images through these stages:
+
+<Steps>
+  <Step title="Upload">
+    User uploads an image to the input datawell
+  </Step>
+  <Step title="Generate thumbnail">
+    Create a 200x200 thumbnail for quick previews
+  </Step>
+  <Step title="Apply watermark">
+    Add a watermark to the full-size image
+  </Step>
+  <Step title="Create resolutions">
+    Generate multiple sizes (small, medium, large) for responsive display
+  </Step>
+  <Step title="Store outputs">
+    Save all processed images to S3 for CDN delivery
+  </Step>
+</Steps>
+
+## Complete flow configuration
+
+```yaml image-processing.yaml
+Name: image-processing
+
+# Storage configuration
+Stores:
+  - Name: UserUploads
+    Type: s3
+    Params:
+      BucketName: user-uploads
+      Region: us-east-1
+
+  - Name: ProcessedImages
+    Type: s3
+    Params:
+      BucketName: processed-images
+      Region: us-east-1
+
+# Input from user uploads
+DataWells:
+  - Store: UserUploads
+    Edge: image-input
+    Source: upload
+
+  # Outputs to processed bucket
+  - Store: ProcessedImages
+    Edge: thumbnail-output
+  
+  - Store: ProcessedImages
+    Edge: watermarked-output
+  
+  - Store: ProcessedImages
+    Edge: small-output
+  
+  - Store: ProcessedImages
+    Edge: medium-output
+  
+  - Store: ProcessedImages
+    Edge: large-output
+
+# Processing pipeline
+Nodes:
+  # Generate thumbnail
+  - ID: thumbnail-generator
+    Uses: github.com/pupload/pupload/imagemagick
+    Inputs:
+      - Name: ImageIn
+        Edge: image-input
+    Outputs:
+      - Name: ImageOut
+        Edge: thumbnail-output
+    Command: Resize
+    Flags:
+      - Name: Width
+        Value: "200"
+      - Name: Height
+        Value: "200"
+      - Name: Mode
+        Value: "cover"
+
+  # Apply watermark to original
+  - ID: watermark-applier
+    Uses: github.com/pupload/pupload/imagemagick
+    Inputs:
+      - Name: ImageIn
+        Edge: image-input
+      - Name: WatermarkIn
+        Edge: static-watermark
+    Outputs:
+      - Name: ImageOut
+        Edge: watermarked-output
+    Command: Composite
+    Flags:
+      - Name: Position
+        Value: "bottom-right"
+      - Name: Opacity
+        Value: "0.3"
+
+  # Small resolution (640px)
+  - ID: small-resize
+    Uses: github.com/pupload/pupload/imagemagick
+    Inputs:
+      - Name: ImageIn
+        Edge: watermarked-output
+    Outputs:
+      - Name: ImageOut
+        Edge: small-output
+    Command: Resize
+    Flags:
+      - Name: Width
+        Value: "640"
+      - Name: Quality
+        Value: "85"
+
+  # Medium resolution (1280px)
+  - ID: medium-resize
+    Uses: github.com/pupload/pupload/imagemagick
+    Inputs:
+      - Name: ImageIn
+        Edge: watermarked-output
+    Outputs:
+      - Name: ImageOut
+        Edge: medium-output
+    Command: Resize
+    Flags:
+      - Name: Width
+        Value: "1280"
+      - Name: Quality
+        Value: "90"
+
+  # Large resolution (1920px)
+  - ID: large-resize
+    Uses: github.com/pupload/pupload/imagemagick
+    Inputs:
+      - Name: ImageIn
+        Edge: watermarked-output
+    Outputs:
+      - Name: ImageOut
+        Edge: large-output
+    Command: Resize
+    Flags:
+      - Name: Width
+        Value: "1920"
+      - Name: Quality
+        Value: "95"
+```
+
+## Node details
+
+### Thumbnail generator
+
+Creates a square 200x200 thumbnail using cover mode (crops to fit). Perfect for profile pictures and grid displays.
+
+- **Resource tier**: `c-small` (CPU only, fast)
+- **Input**: Original uploaded image
+- **Output**: 200x200 JPEG thumbnail
+
+### Watermark applier
+
+Composites a watermark image onto the bottom-right corner with 30% opacity. Protects your images from unauthorized use.
+
+- **Resource tier**: `c-small` (CPU only)
+- **Inputs**: Original image + watermark asset
+- **Output**: Watermarked full-resolution image
+
+<Note>
+The watermark is sourced from a static edge. Upload your watermark.png to the static assets store before running this flow.
+</Note>
+
+### Resolution nodes (small, medium, large)
+
+These three nodes run in parallel, each generating a different size optimized for different display contexts:
+
+- **Small (640px)**: Mobile devices, thumbnails
+- **Medium (1280px)**: Tablets, standard desktop displays
+- **Large (1920px)**: High-resolution displays, print
+
+Each uses progressive quality settings to balance file size and visual quality.
+
+## Running the flow
+
+<Tabs>
+  <Tab title="CLI">
+    ```bash
+    # Test locally with mock S3
+    pup test image-processing \
+      --input image-input=./photo.jpg \
+      --mocks3
+
+    # Run against real controller
+    pup test image-processing \
+      --input image-input=./photo.jpg \
+      --controller localhost:8080
+    ```
+  </Tab>
+  <Tab title="API">
+    ```bash
+    curl -X POST http://localhost:8080/v1/projects/{project_id}/flows/image-processing \
+      -H "Content-Type: application/json" \
+      -d '{
+        "inputs": {
+          "image-input": "https://example.com/photo.jpg"
+        }
+      }'
+    ```
+  </Tab>
+  <Tab title="SDK (Go)">
+    ```go
+    client := pupload.NewClient("http://localhost:8080")
+    
+    run, err := client.RunFlow(ctx, pupload.RunFlowRequest{
+        ProjectID: "my-project",
+        FlowName:  "image-processing",
+        Inputs: map[string]string{
+            "image-input": "https://example.com/photo.jpg",
+        },
+    })
+    ```
+  </Tab>
+</Tabs>
+
+<Tip>
+The thumbnail and watermark nodes run in parallel since they both depend only on the original input. The three resolution nodes also run in parallel, triggered after watermarking completes.
+</Tip>
+
+## Output structure
+
+After processing completes, your S3 bucket will contain:
+
+```
+processed-images/
+├── {run-id}/thumbnail-output/{artifact-id}.jpg    # 200x200 thumbnail
+├── {run-id}/watermarked-output/{artifact-id}.jpg  # Full size with watermark
+├── {run-id}/small-output/{artifact-id}.jpg        # 640px
+├── {run-id}/medium-output/{artifact-id}.jpg       # 1280px
+└── {run-id}/large-output/{artifact-id}.jpg        # 1920px
+```
+
+## Next steps
+
+- Add error handling for invalid image formats
+- Configure [lifetime policies](/concepts/flows) to clean up intermediary files
+- Set up webhooks to notify your app when processing completes
+- Scale workers with [resource tiers](/guides/resource-tiers) for high-volume processing

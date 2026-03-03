@@ -1,0 +1,294 @@
+---
+title: Controller configuration
+description: Configure the Pupload controller with controller.yaml
+---
+
+The controller manages flow execution, scheduling, and coordination between workers. Configure it using `controller.yaml` in one of these locations:
+
+- `$PUPLOAD_CONFIG/controller.yaml`
+- `/etc/pupload/controller.yaml`
+- `$HOME/.config/pupload/controller.yaml`
+- `$HOME/.pupload/controller.yaml`
+
+## Complete example
+
+<CodeGroup>
+```yaml controller.yaml
+SyncPlane:
+  SelectedSyncPlane: redis
+  Redis:
+    Address: localhost:6379
+    Password: ""
+    DB: 0
+    PoolSize: 10
+    MaxRetries: 3
+  ControllerStepInterval: "@every 1s"
+
+Telemetry:
+  Enabled: true
+  Exporter: otlp
+  Endpoint: localhost:4317
+  Insecure: true
+  SampleRate: 1.0
+  Headers:
+    Authorization: Bearer token
+
+ProjectRepo:
+  Address: localhost:6379
+  Password: ""
+  DB: 0
+
+RuntimeRepo:
+  Type: redis
+  Redis:
+    Address: localhost:6379
+    Password: ""
+    DB: 0
+
+Storage:
+  DataPath: /var/lib/pupload/data
+```
+
+```yaml Minimal
+SyncPlane:
+  SelectedSyncPlane: redis
+  Redis:
+    Address: localhost:6379
+
+ProjectRepo:
+  Address: localhost:6379
+
+RuntimeRepo:
+  Type: redis
+  Redis:
+    Address: localhost:6379
+```
+</CodeGroup>
+
+## Configuration reference
+
+### SyncPlane
+
+The sync plane handles distributed coordination between controller and workers using message queues and distributed locks.
+
+<ParamField path="SyncPlane.SelectedSyncPlane" type="string" default="redis">
+  Sync plane implementation to use. Currently only `redis` is supported.
+</ParamField>
+
+<ParamField path="SyncPlane.ControllerStepInterval" type="string" default="@every 1s">
+  Cron specification for how frequently the controller attempts flow steps. Examples:
+  - `@every 1s` - Every second
+  - `@every 500ms` - Every 500 milliseconds
+  - `@every 5s` - Every 5 seconds
+</ParamField>
+
+#### Redis settings
+
+<ParamField path="SyncPlane.Redis.Address" type="string" default="localhost:6379">
+  Redis server address in `host:port` format.
+</ParamField>
+
+<ParamField path="SyncPlane.Redis.Password" type="string" default="">
+  Redis password for authentication. Leave empty if no password is set.
+</ParamField>
+
+<ParamField path="SyncPlane.Redis.DB" type="integer" default="0">
+  Redis database number to use (0-15).
+</ParamField>
+
+<ParamField path="SyncPlane.Redis.PoolSize" type="integer" default="10">
+  Maximum number of socket connections in the Redis connection pool.
+</ParamField>
+
+<ParamField path="SyncPlane.Redis.MaxRetries" type="integer" default="3">
+  Maximum number of retries before giving up on a Redis operation.
+</ParamField>
+
+### Telemetry
+
+OpenTelemetry configuration for distributed tracing and monitoring.
+
+<ParamField path="Telemetry.Enabled" type="boolean" default="false">
+  Enable or disable telemetry collection.
+</ParamField>
+
+<ParamField path="Telemetry.Exporter" type="string" default="none">
+  Telemetry exporter type:
+  - `otlp` - Export to OpenTelemetry Protocol endpoint
+  - `stdout` - Print telemetry to stdout (useful for debugging)
+  - `none` - Disable telemetry
+</ParamField>
+
+<ParamField path="Telemetry.Endpoint" type="string">
+  OTLP endpoint URL when using the `otlp` exporter. Example: `localhost:4317` or `https://api.honeycomb.io`
+</ParamField>
+
+<ParamField path="Telemetry.Insecure" type="boolean" default="false">
+  Use insecure (non-TLS) connection to the telemetry endpoint. Set to `true` for local development.
+</ParamField>
+
+<ParamField path="Telemetry.SampleRate" type="float" default="1.0">
+  Sampling rate for traces (0.0 to 1.0). Use `0.1` to sample 10% of traces, `1.0` to sample all traces.
+</ParamField>
+
+<ParamField path="Telemetry.Headers" type="object">
+  Additional headers to send with telemetry exports. Useful for authentication tokens.
+  
+  ```yaml
+  Headers:
+    Authorization: Bearer your-token
+    X-Custom-Header: value
+  ```
+</ParamField>
+
+### ProjectRepo
+
+Project repository stores project metadata and configuration.
+
+<Note>
+Currently uses Redis. Future versions may support additional backends.
+</Note>
+
+<ParamField path="ProjectRepo.Address" type="string" default="localhost:6379">
+  Redis server address for project storage.
+</ParamField>
+
+<ParamField path="ProjectRepo.Password" type="string" default="">
+  Redis password for authentication.
+</ParamField>
+
+<ParamField path="ProjectRepo.DB" type="integer" default="0">
+  Redis database number for project data.
+</ParamField>
+
+### RuntimeRepo
+
+Runtime repository stores active flow execution state and runtime metadata.
+
+<ParamField path="RuntimeRepo.Type" type="string" default="redis">
+  Runtime repository backend type. Currently only `redis` is supported.
+</ParamField>
+
+<ParamField path="RuntimeRepo.Redis.Address" type="string" default="localhost:6379">
+  Redis server address for runtime storage.
+</ParamField>
+
+<ParamField path="RuntimeRepo.Redis.Password" type="string" default="">
+  Redis password for authentication.
+</ParamField>
+
+<ParamField path="RuntimeRepo.Redis.DB" type="integer" default="0">
+  Redis database number for runtime data.
+</ParamField>
+
+### Storage
+
+Local storage configuration for the controller.
+
+<ParamField path="Storage.DataPath" type="string">
+  Path to directory for storing controller data files, flow definitions, and temporary artifacts.
+  
+  Example: `/var/lib/pupload/data` or `$HOME/.pupload/data`
+</ParamField>
+
+<Warning>
+Ensure the controller process has read/write permissions to the `DataPath` directory.
+</Warning>
+
+## Environment variables
+
+You can override configuration using environment variables:
+
+```bash
+# Set config directory
+export PUPLOAD_CONFIG=/etc/pupload
+
+# Start controller
+pup controller start
+```
+
+## Production configuration
+
+For production deployments:
+
+<CodeGroup>
+```yaml Production
+SyncPlane:
+  SelectedSyncPlane: redis
+  Redis:
+    Address: redis.production.internal:6379
+    Password: ${REDIS_PASSWORD}
+    DB: 0
+    PoolSize: 50
+    MaxRetries: 5
+  ControllerStepInterval: "@every 500ms"
+
+Telemetry:
+  Enabled: true
+  Exporter: otlp
+  Endpoint: https://api.honeycomb.io
+  Insecure: false
+  SampleRate: 0.1
+  Headers:
+    X-Honeycomb-Team: ${HONEYCOMB_API_KEY}
+
+ProjectRepo:
+  Address: redis.production.internal:6379
+  Password: ${REDIS_PASSWORD}
+  DB: 1
+
+RuntimeRepo:
+  Type: redis
+  Redis:
+    Address: redis.production.internal:6379
+    Password: ${REDIS_PASSWORD}
+    DB: 2
+
+Storage:
+  DataPath: /var/lib/pupload/data
+```
+
+```yaml High availability
+SyncPlane:
+  SelectedSyncPlane: redis
+  Redis:
+    Address: redis-cluster.internal:6379
+    Password: ${REDIS_PASSWORD}
+    PoolSize: 100
+    MaxRetries: 10
+  ControllerStepInterval: "@every 100ms"
+
+Telemetry:
+  Enabled: true
+  Exporter: otlp
+  Endpoint: otel-collector:4317
+  Insecure: true
+  SampleRate: 0.05
+
+ProjectRepo:
+  Address: redis-cluster.internal:6379
+  Password: ${REDIS_PASSWORD}
+  DB: 1
+
+RuntimeRepo:
+  Type: redis
+  Redis:
+    Address: redis-cluster.internal:6379
+    Password: ${REDIS_PASSWORD}
+    DB: 2
+
+Storage:
+  DataPath: /mnt/pupload-data
+```
+</CodeGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Worker configuration" icon="server" href="/configuration/worker">
+    Configure worker nodes
+  </Card>
+  <Card title="Flow schema" icon="diagram-project" href="/configuration/flow-schema">
+    Define processing flows
+  </Card>
+</CardGroup>

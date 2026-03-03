@@ -1,0 +1,134 @@
+---
+title: Introduction to Pupload
+description: Upload service and orchestrator for distributed processing pipelines
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/hero-light.png"
+  alt="Pupload Hero Light"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/hero-dark.png"
+  alt="Pupload Hero Dark"
+/>
+
+## What is Pupload?
+
+Pupload is an open source system for handling user uploads, applying media transformations, and storing results exactly where you want them. It supports writing custom tasks, combining them into flows, and managing the lifetime of results and intermediaries all in one place.
+
+Most workflow engines are built for generic task orchestration. **Pupload is built specifically for files.**
+
+## When to use Pupload
+
+<CardGroup cols={2}>
+  <Card title="User uploads" icon="upload">
+    Processing images, videos, documents, and other user-submitted files
+  </Card>
+  <Card title="Processing tiers" icon="layer-group">
+    Different tiers for cheap transcoding vs expensive ML models
+  </Card>
+  <Card title="Multi-step pipelines" icon="diagram-project">
+    Upload → resize → watermark → store workflows
+  </Card>
+  <Card title="Resource scaling" icon="chart-line">
+    Scale workers independently based on GPU/CPU availability
+  </Card>
+</CardGroup>
+
+## Core concepts
+
+<AccordionGroup>
+  <Accordion title="Flows" icon="water">
+    YAML pipelines that define your processing workflow. They contain nodes (steps), edges (connections), datawells (input/output), and stores (storage backends).
+  </Accordion>
+  
+  <Accordion title="Nodes" icon="cube">
+    Run in Docker containers. Each node gets presigned URLs for inputs/outputs. On completion, it uploads results and triggers downstream nodes.
+  </Accordion>
+  
+  <Accordion title="Resource tiers" icon="microchip">
+    Workers subscribe to resource queues:
+    - `c-small/medium/large` - CPU
+    - `m-small/medium/large` - Memory  
+    - `g-small/medium/large` - GPU (NVIDIA, AMD, Intel, Apple)
+    - `gn-*/ga-*/gi-*` - Vendor-specific
+  </Accordion>
+  
+  <Accordion title="Stores" icon="database">
+    Storage backends for your data. Supports S3-compatible storage with configurable buckets and endpoints.
+  </Accordion>
+</AccordionGroup>
+
+## Common use cases
+
+<CodeGroup>
+
+```yaml Image/Video Processing
+upload → thumbnail → watermark → multiple resolutions → CDN
+```
+
+```yaml Document Pipeline
+PDF upload → extract text → OCR scanned pages → index → store
+```
+
+```yaml ML Inference
+upload → preprocess → GPU inference → postprocess → results
+```
+
+```yaml Archive Processing
+zip upload → extract → virus scan → process each file → store
+```
+
+</CodeGroup>
+
+<Tip>
+Mix CPU and GPU nodes. Scale GPU workers separately. Run expensive steps on dedicated hardware.
+</Tip>
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card
+    title="Installation"
+    icon="download"
+    href="/installation"
+  >
+    Install Pupload and set up your development environment
+  </Card>
+  <Card
+    title="Quick start"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Build and run your first processing flow in minutes
+  </Card>
+  <Card
+    title="CLI reference"
+    icon="terminal"
+    href="/cli/init"
+  >
+    Complete command reference for the pup CLI
+  </Card>
+  <Card
+    title="API reference"
+    icon="code"
+    href="/api/overview"
+  >
+    REST API documentation for programmatic access
+  </Card>
+</CardGroup>
+
+## Why Pupload vs rolling your own?
+
+You don't have to build:
+- Presigned URL handling
+- Container orchestration
+- Retry logic
+- Resource scheduling
+- Distributed state management
+
+<Note>
+Pupload requires **Go 1.25+** and **Docker**. Redis is optional for standalone server deployments.
+</Note>

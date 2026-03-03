@@ -1,0 +1,83 @@
+---
+title: pup dev
+description: Start a local development controller and worker for testing
+---
+
+## Overview
+
+The `pup dev` command starts a local development controller and worker, allowing you to test your Pupload flows locally without deploying to a remote controller.
+
+## Usage
+
+```bash
+pup dev
+```
+
+## Prerequisites
+
+<Note>
+  You must be inside a Pupload project directory to run this command. If you're not in a project, you'll receive an error: "not inside a project".
+</Note>
+
+## Examples
+
+### Start local development environment
+
+<CodeGroup>
+```bash Terminal
+pup dev
+```
+
+```bash Output
+Starting local controller on http://localhost:1234
+Controller ready
+Worker connected
+```
+</CodeGroup>
+
+### Typical development workflow
+
+```bash
+# Terminal 1: Start the dev environment
+pup dev
+
+# Terminal 2: Test your flows
+pup test my-flow --input data=./test.jpg
+```
+
+## What it does
+
+When you run `pup dev`, the following services are started:
+
+1. **Controller** - Orchestrates upload flows and manages task distribution
+2. **Worker** - Executes the actual processing tasks defined in your flows
+
+Both services run on your local machine, typically with the controller listening on `http://localhost:1234`.
+
+<Tip>
+  The `pup test` command automatically starts `pup dev` if no remote controller is specified, so you may not need to run this command separately during testing.
+</Tip>
+
+<Warning>
+  The development environment is for testing only. Do not use it in production. Use `pup push` to deploy your project to a production controller.
+</Warning>
+
+## How it works
+
+The dev command:
+
+1. Locates your project root directory
+2. Loads your project configuration
+3. Starts a local controller instance
+4. Starts a local worker instance
+5. Connects the worker to the controller
+
+## Stopping the dev environment
+
+To stop the development environment, press `Ctrl+C` in the terminal where `pup dev` is running.
+
+## Related commands
+
+- [pup test](/cli/test) - Test a specific flow (auto-starts dev environment)
+- [pup init](/cli/init) - Initialize a new project
+- [pup push](/cli/push) - Deploy project to a remote controller

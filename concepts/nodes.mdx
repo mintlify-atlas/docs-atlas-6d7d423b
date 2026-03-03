@@ -1,0 +1,278 @@
+---
+title: Nodes
+description: Understanding nodes and node definitions in Pupload
+---
+
+## What are nodes?
+
+Nodes are the fundamental processing units in Pupload flows. Each node represents a containerized task that reads input data, performs processing, and produces output data. Nodes are defined separately from their usage, allowing you to reuse the same node definition across multiple flows.
+
+## Node vs NodeDef
+
+Pupload separates node **instances** from node **definitions**:
+
+- **Node**: An instance of a node within a specific flow, with concrete input/output connections
+- **NodeDef**: The definition of what a node can do, including its Docker image, available inputs/outputs, and resource requirements
+
+### Node structure
+
+```go
+type Node struct {
+    ID      string
+    Uses    string
+    Inputs  []NodeEdge
+    Outputs []NodeEdge
+    Flags   []NodeFlag
+    Command string
+}
+
+type NodeEdge struct {
+    Name string
+    Edge string
+}
+
+type NodeFlag struct {
+    Name  string
+    Value string
+}
+```
+
+From `internal/models/node.go:3-20`
+
+### NodeDef structure
+
+```go
+type NodeDef struct {
+    Publisher   string
+    Name        string
+    Image       string
+    Inputs      []NodeEdgeDef
+    Outputs     []NodeEdgeDef
+    Flags       []NodeFlagDef
+    Command     NodeCommandDef
+    Tier        string
+    MaxAttempts int
+}
+
+type NodeFlagDef struct {
+    Name        string
+    Description string
+    Required    bool
+    Type        string
+}
+
+type NodeEdgeDef struct {
+    Name        string
+    Description string
+    Required    bool
+    Type        []MimeType
+}
+
+type NodeCommandDef struct {
+    Name        string
+    Description string
+    Exec        string
+}
+```
+
+From `internal/models/node_def.go:8-38`
+
+<Note>
+The `Uses` field in a Node references a NodeDef by combining the publisher and name: `github.com/pupload/pupload/ffmpeg`
+</Note>
+
+## Node execution
+
+When a node is ready to execute, the worker:
+
+1. **Validates the container image** for the node
+2. **Pulls the image** if not already cached
+3. **Creates a container** with the specified resource tier
+4. **Downloads input files** into the container
+5. **Starts the container** and waits for completion
+6. **Uploads output files** from the container
+7. **Cleans up** the container
+
+Here's the core execution flow:
+
+```go
+func (n *NodeService) NodeExecute(ctx context.Context, payload syncplane.NodeExecutePayload, resource container.Resources) error {
+    // Prepare input/output URLs
+    in, out, err := n.prepareIO(payload.InputURLs, payload.OutputURLs, payload.NodeDef, "/tmp")
+    if err != nil {
+        return err
+    }
+
+    // Generate the command
+    command, err := n.generateCommand(payload.Node, payload.NodeDef, in, out)
+    if err != nil {
+        return err
+    }
+
+    // Validate and pull image if needed
+    ok, err := n.CS.IM.Validate(ctx, payload.NodeDef.Image)
+    if err != nil {
+        return err
+    }
+    if !ok {
+        err := n.CS.IM.Pull(ctx, payload.NodeDef.Image)
+        if err != nil {
+            return err
+        }
+    }
+
+    // Create container
+    containerID, err := n.CS.RT.CreateContainer(ctx, cont.ContainerConfig{
+        Image: payload.NodeDef.Image,
+        Name:  fmt.Sprintf("pupload-%s-%s", payload.RunID, payload.Node.ID),
+        Cmd:   command,
+
+        HostConfig: &container.HostConfig{
+            AutoRemove: false,
+            Resources:  resource,
+        },
+    })
+
+    if err != nil {
+        return err
+    }
+
+    defer n.CS.RT.RemoveContainer(ctx, containerID)
+
+    // Download inputs
+    if err := n.downloadAllInputsToContainer(ctx, containerID, in); err != nil {
+        return err
+    }
+
+    // Start container
+    if err := n.CS.RT.StartContainer(ctx, containerID); err != nil {
+        return err
+    }
+
+    // Wait for completion
+    res, err := n.CS.RT.WaitContainer(ctx, containerID)
+    if err != nil {
+        return err
+    }
+
+    // Check exit code
+    if res.ExitCode != 0 {
+        return fmt.Errorf("contained exited with non-0 exit code")
+    }
+
+    // Upload outputs
+    if err := n.uploadAllOutputsFromContainer(ctx, containerID, out); err != nil {
+        return err
+    }
+
+    return nil
+}
+```
+
+From `internal/worker/node/execute.go:21-126`
+
+<Warning>
+Nodes run in isolated containers. They cannot access the host filesystem or network unless explicitly configured.
+</Warning>
+
+## Node inputs and outputs
+
+Nodes communicate through **edges** - named data connections. When you define a node in a flow, you map the node's input/output names to specific edges:
+
+```yaml
+Nodes:
+  - ID: 0
+    DefName: github.com/pupload/pupload/ffmpeg
+    Inputs:
+      - Name: VideoStream        # Input name from NodeDef
+        Edge: teststore_input    # Edge name in the flow
+
+    Outputs:
+      - Name: VideoOut           # Output name from NodeDef
+        Edge: compressed_vids    # Edge name in the flow
+```
+
+From `internal/controller/flows/defaults/Flows/test.yaml:27-35`
+
+<Info>
+Edges act as data pipelines. One node's output edge can be another node's input edge, creating a data processing chain.
+</Info>
+
+## Node flags
+
+Flags allow you to pass configuration parameters to nodes:
+
+```yaml
+Flags: 
+  - Name: Flag
+    Value: Test123
+```
+
+From `internal/controller/flows/defaults/Flows/test.yaml:37-39`
+
+Flags are passed as environment variables to the container during command generation:
+
+```go
+func (n *NodeService) generateCommand(node models.Node, nodeDef models.NodeDef, in, out []preparedIO) ([]string, error) {
+    envMap := make(map[string]string)
+
+    if err := n.addEnvFlagMap(envMap, nodeDef, node); err != nil {
+        return nil, err
+    }
+
+    // prep inputs
+    n.addIOToEnvMap(envMap, in)
+    n.addIOToEnvMap(envMap, out)
+
+    expand := os.Expand(nodeDef.Command.Exec, func(s string) string {
+        return envMap[s]
+    })
+
+    command := strings.Fields(expand)
+    return command, nil
+}
+```
+
+From `internal/worker/node/execute.go:152-169`
+
+## Node resource tiers
+
+Every NodeDef specifies a resource tier that determines CPU, memory, storage, and optional GPU allocation:
+
+```go
+const (
+    DefaultTier     = "c-small"
+    DefaultAttempts = 3
+)
+
+func (nd *NodeDef) Normalize() {
+    if nd.Tier == "" {
+        nd.Tier = DefaultTier
+    }
+
+    if nd.MaxAttempts <= 0 {
+        nd.MaxAttempts = DefaultAttempts
+    }
+}
+```
+
+From `internal/models/node_def.go:3-48`
+
+<Tip>
+Choose the right resource tier for your workload. Start with `c-small` and scale up only if needed. See the [Resources documentation](/concepts/resources) for all available tiers.
+</Tip>
+
+## Node retry behavior
+
+Nodes can be configured to retry on failure using the `MaxAttempts` field. By default, nodes retry up to 3 times before marking the flow as failed.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Resources" icon="microchip" href="/concepts/resources">
+    Learn about resource tiers and GPU support
+  </Card>
+  <Card title="Flows" icon="diagram-project" href="/concepts/flows">
+    See how nodes connect in flows
+  </Card>
+</CardGroup>

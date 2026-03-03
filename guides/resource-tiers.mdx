@@ -1,0 +1,401 @@
+---
+title: Resource tiers
+description: Understand and configure resource tiers to optimize performance and cost for your Pupload workloads
+---
+
+Resource tiers define the CPU, memory, storage, and GPU resources allocated to node executions. Pupload provides a comprehensive set of standard tiers optimized for different workload types.
+
+## Overview
+
+Each tier specifies:
+
+- **CPU cores**: Number of CPU cores available
+- **Memory**: RAM allocation
+- **Storage**: Temporary storage space
+- **GPU** (optional): GPU vendor, count, and memory
+
+## Default tier
+
+If no tier is specified in a node definition, Pupload uses the default tier:
+
+```yaml
+Tier: c-small  # 2 CPU, 2GB RAM, 20GB storage
+```
+
+From internal/models/node_def.go:5:4:
+```go
+const (
+    DefaultTier     = "c-small"
+    DefaultAttempts = 3
+)
+```
+
+## CPU-optimized tiers (C-series)
+
+Best for general-purpose computing, data processing, and CPU-intensive workloads.
+
+| Tier | CPU | Memory | Storage | Use case |
+|------|-----|--------|---------|----------|
+| `c-nano` | 1 | 512MB | 10GB | Minimal processing |
+| `c-micro` | 1 | 1GB | 10GB | Light workloads |
+| `c-small` | 2 | 2GB | 20GB | Standard processing (default) |
+| `c-medium` | 4 | 4GB | 50GB | Moderate processing |
+| `c-large` | 8 | 8GB | 100GB | Heavy processing |
+| `c-xlarge` | 16 | 16GB | 250GB | Very heavy processing |
+| `c-2xlarge` | 32 | 32GB | 500GB | Extreme processing |
+| `c-4xlarge` | 64 | 64GB | 1TB | Maximum CPU power |
+
+### Example usage
+
+```yaml
+Publisher: github.com/myorg
+Name: videoencoder
+Image: myorg/encoder:latest
+Tier: c-large  # 8 CPU cores for fast encoding
+
+Command:
+  Name: Encode
+  Exec: ffmpeg -i ${Input} -c:v libx264 -threads 8 ${Output}
+```
+
+## Memory-optimized tiers (M-series)
+
+Best for memory-intensive workloads like large dataset processing, caching, and in-memory databases.
+
+| Tier | CPU | Memory | Storage | Memory:CPU ratio |
+|------|-----|--------|---------|------------------|
+| `m-small` | 2 | 4GB | 20GB | 2:1 |
+| `m-medium` | 4 | 16GB | 50GB | 4:1 |
+| `m-large` | 8 | 32GB | 100GB | 4:1 |
+| `m-xlarge` | 16 | 64GB | 250GB | 4:1 |
+| `m-2xlarge` | 32 | 128GB | 500GB | 4:1 |
+| `m-4xlarge` | 64 | 256GB | 1TB | 4:1 |
+
+### Example usage
+
+```yaml
+Publisher: github.com/myorg
+Name: dataanalyzer
+Image: myorg/analyzer:latest
+Tier: m-xlarge  # 64GB RAM for in-memory analytics
+
+Command:
+  Name: Analyze
+  Exec: python /app/analyze.py --memory-intensive --input ${Input} --output ${Output}
+```
+
+## GPU tiers
+
+GPU tiers are available for workloads that benefit from GPU acceleration.
+
+### Generic GPU tiers (G-series)
+
+Any vendor GPU that meets the memory requirement:
+
+| Tier | CPU | Memory | Storage | GPU | GPU Memory |
+|------|-----|--------|---------|-----|------------|
+| `g-micro` | 4 | 8GB | 20GB | 1x any | 2GB |
+| `g-small` | 4 | 16GB | 100GB | 1x any | 8GB |
+| `g-medium` | 8 | 32GB | 250GB | 1x any | 16GB |
+| `g-large` | 12 | 48GB | 500GB | 1x any | 24GB |
+| `g-xlarge` | 16 | 64GB | 1TB | 1x any | 40GB |
+| `g-2xlarge` | 24 | 96GB | 1TB | 1x any | 80GB |
+
+### NVIDIA GPU tiers (GN-series)
+
+For NVIDIA GPU-specific workloads:
+
+| Tier | CPU | Memory | Storage | GPU | Example GPUs |
+|------|-----|--------|---------|-----|-------------|
+| `gn-small` | 4 | 16GB | 100GB | 1x 8GB | T4, RTX 3060 |
+| `gn-medium` | 8 | 32GB | 250GB | 1x 16GB | RTX 4080, A4000 |
+| `gn-large` | 12 | 48GB | 500GB | 1x 24GB | RTX 4090, L40 |
+| `gn-xlarge` | 16 | 64GB | 1TB | 1x 40GB | A100 40GB, A6000 |
+| `gn-2xlarge` | 24 | 96GB | 1TB | 1x 80GB | A100 80GB, H100 |
+
+### AMD GPU tiers (GA-series)
+
+For AMD GPU-specific workloads:
+
+| Tier | CPU | Memory | Storage | GPU | Example GPUs |
+|------|-----|--------|---------|-----|-------------|
+| `ga-small` | 4 | 16GB | 100GB | 1x 8GB | RX 6600 XT, RX 6700 XT |
+| `ga-medium` | 8 | 32GB | 250GB | 1x 16GB | RX 7900 XT, W6800 |
+| `ga-large` | 12 | 48GB | 500GB | 1x 24GB | RX 7900 XTX, W7900 |
+| `ga-xlarge` | 16 | 64GB | 1TB | 1x 32GB | MI100 |
+| `ga-2xlarge` | 24 | 96GB | 1TB | 1x 64GB | MI210, MI250X |
+
+### Apple Silicon tiers (GM-series)
+
+For Apple Silicon unified memory architecture:
+
+| Tier | CPU | Memory (Unified) | Storage | Chip |
+|------|-----|------------------|---------|------|
+| `gm-small` | 8 | 16GB | 250GB | M1, M2 |
+| `gm-medium` | 10 | 32GB | 500GB | M1 Pro, M2 Pro |
+| `gm-large` | 12 | 48GB | 1TB | M1 Max, M2 Max |
+| `gm-xlarge` | 16 | 64GB | 1TB | M1 Ultra, M2 Ultra |
+| `gm-2xlarge` | 24 | 128GB | 2TB | M2 Ultra (maxed) |
+
+### Intel GPU tiers (GI-series)
+
+For Intel Arc and Data Center GPUs:
+
+| Tier | CPU | Memory | Storage | GPU | Example GPUs |
+|------|-----|--------|---------|-----|-------------|
+| `gi-small` | 4 | 16GB | 100GB | 1x 8GB | Arc A380, A580 |
+| `gi-medium` | 8 | 32GB | 250GB | 1x 16GB | Arc A770, A750 |
+| `gi-large` | 12 | 48GB | 500GB | 1x 48GB | GPU Max 1100 |
+| `gi-xlarge` | 16 | 64GB | 1TB | 1x 64GB | GPU Max 1550 |
+
+### GPU example usage
+
+```yaml
+Publisher: github.com/myorg
+Name: mltrainer
+Image: myorg/ml:cuda12
+Tier: gn-large  # NVIDIA GPU with 24GB VRAM
+
+Command:
+  Name: Train
+  Exec: python /app/train.py --gpu --input ${TrainingData} --output ${Model}
+```
+
+<Warning>
+  GPU tiers are only available on workers with GPU support enabled. Ensure your worker configuration includes GPU resources.
+</Warning>
+
+## Configuring worker resources
+
+Workers must be configured with sufficient resources to handle the tiers you want to use.
+
+### Worker configuration
+
+From internal/worker/config/config.go:76:92:
+
+```yaml
+Resources:
+  MaxCPU: "auto"      # Detect available CPU cores
+  MaxMemory: "auto"   # Detect available RAM
+  MaxStorage: "auto"  # Detect available storage
+```
+
+You can also specify explicit limits:
+
+```yaml
+Resources:
+  MaxCPU: "16"        # 16 CPU cores
+  MaxMemory: "64gb"   # 64 GB RAM
+  MaxStorage: "1tb"   # 1 TB storage
+```
+
+<Info>
+  Workers automatically detect and advertise available resources. Use `"auto"` for dynamic environments.
+</Info>
+
+## Resource units
+
+Pupload supports various units for memory and storage configuration:
+
+### Memory and storage units
+
+- **Bytes**: `b` (e.g., `1024b`)
+- **Kilobytes**: `kb` (e.g., `512kb`)
+- **Megabytes**: `mb` (e.g., `2048mb` or `2gb`)
+- **Gigabytes**: `gb` (e.g., `16gb`)
+- **Terabytes**: `tb` (e.g., `1tb`)
+
+From internal/resources/resources.go:129:135:
+
+```go
+var suffix map[string]float64 = map[string]float64{
+    "b":  1.0 / 1024 / 1024,
+    "kb": 1.0 / 1024,
+    "mb": 1,
+    "gb": 1024,
+    "tb": 1024 * 1024,
+}
+```
+
+## Resource allocation
+
+When a node execution is scheduled:
+
+<Steps>
+  <Step title="Worker evaluates availability">
+    The worker checks if it has sufficient resources for the requested tier.
+  </Step>
+
+  <Step title="Resources are reserved">
+    CPU, memory, and storage are reserved for the execution.
+  </Step>
+
+  <Step title="Container is launched">
+    The container is started with the tier's resource limits.
+  </Step>
+
+  <Step title="Execution completes">
+    Resources are released when the container exits.
+  </Step>
+</Steps>
+
+## Resource management code
+
+From internal/resources/resources.go:172:194:
+
+```go
+func (rm *ResourceManager) Reserve(tierName string) error {
+    resource, ok := StandardTierMap[tierName]
+    if !ok {
+        return fmt.Errorf("tier not found")
+    }
+
+    rm.currMemMB += resource.Memory.Normalize()
+    rm.currStorageMB += resource.Storage.Normalize()
+
+    return nil
+}
+
+func (rm *ResourceManager) Release(tierName string) error {
+    resource, ok := StandardTierMap[tierName]
+    if !ok {
+        return fmt.Errorf("tier not found")
+    }
+
+    rm.currMemMB -= resource.Memory.Normalize()
+    rm.currStorageMB -= resource.Storage.Normalize()
+
+    return nil
+}
+```
+
+## Choosing the right tier
+
+<Tabs>
+  <Tab title="By workload type">
+    **CPU-bound tasks** (C-series):
+    - Video/audio encoding
+    - Data compression
+    - Text processing
+    - General computation
+
+    **Memory-bound tasks** (M-series):
+    - Large dataset processing
+    - In-memory analytics
+    - Database operations
+    - Caching layers
+
+    **GPU-accelerated tasks** (G/GN/GA/GI-series):
+    - Machine learning training/inference
+    - Video rendering
+    - Scientific simulations
+    - Cryptocurrency mining
+  </Tab>
+
+  <Tab title="By cost optimization">
+    Start small and scale up:
+
+    1. **Profile your workload**: Run with `c-small` initially
+    2. **Monitor resource usage**: Check CPU, memory, and storage utilization
+    3. **Adjust tier**: Scale up if resources are constrained
+    4. **Optimize code**: Reduce resource requirements when possible
+    5. **Scale down**: Use the smallest tier that meets your needs
+  </Tab>
+
+  <Tab title="By availability">
+    Consider worker availability:
+
+    - **Common tiers**: More workers likely support `c-small` to `c-large`
+    - **Large tiers**: Fewer workers may support `c-xlarge` and above
+    - **GPU tiers**: Limited by GPU availability in your worker pool
+    - **Fallback strategy**: Design flows to work with multiple tier options
+  </Tab>
+</Tabs>
+
+## Custom resource definitions
+
+While Pupload provides standard tiers, you can understand the structure for advanced use cases.
+
+From internal/resources/types.go:3:14:
+
+```go
+type ResourceDefinition struct {
+    CPU     CPUCoreInput
+    Memory  MemoryInput
+    Storage StorageInput
+    GPU     *GPUDefinition
+}
+
+type GPUDefinition struct {
+    Vendor string // nvidia, intel, amd, or any.
+    Count  GPUCountInput
+    Memory GPUMemoryInput
+}
+```
+
+Example from internal/resources/defaults.go:19:29:
+
+```go
+C_Small = ResourceDefinition{
+    CPU:     2,
+    Memory:  "2gb",
+    Storage: "20gb",
+}
+```
+
+## Best practices
+
+<Tip>
+  Follow these guidelines for optimal resource utilization:
+</Tip>
+
+1. **Start small**: Begin with lower tiers and scale up as needed
+2. **Profile workloads**: Measure actual resource usage before committing to larger tiers
+3. **Use appropriate series**: Match tier series to workload characteristics
+4. **Consider cost**: Larger tiers consume more worker resources
+5. **Plan for failures**: Set appropriate `MaxAttempts` for resource-intensive tasks
+6. **Monitor worker capacity**: Ensure your worker pool can handle your tier requirements
+7. **GPU specificity**: Use vendor-specific tiers only when necessary
+8. **Test locally**: Validate resource requirements before production deployment
+
+## Troubleshooting
+
+### Node waiting indefinitely
+
+**Problem**: Node execution never starts
+
+**Cause**: No workers have sufficient resources for the requested tier
+
+**Solution**: 
+- Check worker resource configuration
+- Use a smaller tier
+- Add workers with more resources
+
+### Out of memory errors
+
+**Problem**: Container is killed due to memory limit
+
+**Cause**: Workload exceeds tier memory allocation
+
+**Solution**:
+- Increase to a memory-optimized tier (M-series)
+- Optimize your code to use less memory
+- Process data in smaller batches
+
+### GPU not available
+
+**Problem**: GPU tier requested but no GPU found
+
+**Cause**: Worker doesn't have GPU support enabled
+
+**Solution**:
+- Enable GPU support in worker configuration
+- Install GPU drivers on worker host
+- Use a different worker with GPU support
+
+## Next steps
+
+- Create [custom nodes](/guides/custom-nodes) with appropriate tiers
+- Configure [storage backends](/guides/storage-backends) for your data
+- Design [flows](/guides/creating-flows) that use multiple tiers
+- Deploy your infrastructure with the [deployment guide](/guides/deployment)

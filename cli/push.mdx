@@ -1,0 +1,159 @@
+---
+title: pup push
+description: Deploy your project to a remote controller
+---
+
+## Overview
+
+The `pup push` command deploys your Pupload project to a configured remote controller. This makes your flows available for production use on the remote controller infrastructure.
+
+## Usage
+
+```bash
+pup push <controller-name>
+```
+
+## Arguments
+
+<ParamField path="controller-name" type="string" required>
+  The name of the controller to push to. This must be a controller that was previously added using `pup controller add`.
+</ParamField>
+
+## Prerequisites
+
+<Note>
+  Before pushing, you must add at least one controller to your project using the `pup controller add` command.
+</Note>
+
+## Examples
+
+### Push to production controller
+
+<CodeGroup>
+```bash Terminal
+pup push production
+```
+
+```bash Output
+Pushing project to controller "production"...
+Uploading flows...
+Uploading node definitions...
+Project pushed to controller "production"
+```
+</CodeGroup>
+
+### Typical deployment workflow
+
+```bash
+# 1. Validate your flows
+pup validate
+
+# 2. Test locally
+pup test my-flow --tui
+
+# 3. Add production controller (first time only)
+pup controller add production https://prod.example.com:1234
+
+# 4. Push to production
+pup push production
+```
+
+## What gets pushed
+
+When you run `pup push`, the following are deployed to the remote controller:
+
+- **Flow definitions**: All flows defined in your project
+- **Node definitions**: Custom node types and configurations
+- **Project configuration**: Project metadata and settings
+- **Dependencies**: Required resources and assets
+
+<Warning>
+  Storage configurations (S3 buckets, credentials) are included in the push. Ensure your production controller has access to the configured storage resources.
+</Warning>
+
+## How it works
+
+1. **Controller Lookup**: Finds the controller configuration by name
+2. **Project Packaging**: Bundles your project files and configurations
+3. **Upload**: Transfers the project to the remote controller
+4. **Deployment**: The controller deploys the project and makes flows available
+5. **Confirmation**: Displays success message
+
+## Before you push
+
+<Tip>
+  Always validate and test your project locally before pushing to production:
+  
+  ```bash
+  pup validate && pup test my-flow --tui
+  ```
+</Tip>
+
+### Pre-push checklist
+
+- [ ] Run `pup validate` to ensure all flows are valid
+- [ ] Test critical flows with `pup test`
+- [ ] Review storage configurations for production environment
+- [ ] Verify controller configuration with `pup controller list`
+- [ ] Ensure you're pushing to the correct controller
+
+## Managing multiple environments
+
+You can configure multiple controllers for different environments:
+
+```bash
+# Add controllers for different environments
+pup controller add development https://dev.example.com:1234
+pup controller add staging https://staging.example.com:1234
+pup controller add production https://prod.example.com:1234
+
+# Push to specific environment
+pup push staging
+```
+
+## Error handling
+
+If the push fails, common causes include:
+
+### Controller not found
+
+```
+Error: controller "production" not found
+```
+
+**Solution**: Add the controller first with `pup controller add` or check the name with `pup controller list`.
+
+### Connection error
+
+```
+Error: failed to connect to controller
+```
+
+**Solution**: Verify the controller URL is correct and the controller is accessible from your network.
+
+### Authentication error
+
+```
+Error: authentication failed
+```
+
+**Solution**: Ensure you have valid credentials for the remote controller.
+
+## Post-deployment
+
+After a successful push:
+
+1. Your flows are immediately available on the remote controller
+2. Workers connected to that controller can execute your flows
+3. You can trigger flows via the controller API or webhooks
+
+<Note>
+  Pushing to a controller overwrites the previous version of your project on that controller. Ensure you want to replace the existing deployment.
+</Note>
+
+## Related commands
+
+- [pup controller add](/cli/controller) - Add a new controller
+- [pup controller list](/cli/controller) - List configured controllers
+- [pup validate](/cli/validate) - Validate before pushing
+- [pup test](/cli/test) - Test before pushing

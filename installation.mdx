@@ -1,0 +1,154 @@
+---
+title: Installation
+description: Install Pupload and set up your development environment
+---
+
+## Requirements
+
+<CardGroup cols={3}>
+  <Card title="Go 1.25+" icon="golang">
+    Required for building and running Pupload
+  </Card>
+  <Card title="Docker" icon="docker">
+    Required for running processing nodes
+  </Card>
+  <Card title="Redis" icon="database">
+    Optional, for standalone server deployments
+  </Card>
+</CardGroup>
+
+## Install from binary
+
+<Tabs>
+  <Tab title="Go Install">
+    The easiest way to install Pupload is using `go install`:
+
+    ```bash
+    go install github.com/pupload/pupload/cmd/pup@latest
+    ```
+
+    This installs the `pup` CLI to your `$GOPATH/bin` directory.
+
+    <Note>
+    Make sure `$GOPATH/bin` is in your `PATH` to run `pup` from anywhere.
+    </Note>
+  </Tab>
+
+  <Tab title="From Source">
+    Clone the repository and build from source:
+
+    ```bash
+    git clone https://github.com/pupload/pupload.git
+    cd pupload
+    go build -o pup ./cmd/pup
+    ```
+
+    This creates a `pup` binary in the current directory. Move it to a directory in your `PATH`:
+
+    ```bash
+    sudo mv pup /usr/local/bin/
+    ```
+  </Tab>
+
+  <Tab title="Pre-built Binaries">
+    Download pre-built binaries from the [GitHub Releases](https://github.com/pupload/pupload/releases) page.
+
+    <Steps>
+      <Step title="Download the binary">
+        Choose the binary for your platform (Linux, macOS, Windows)
+      </Step>
+      <Step title="Extract the archive">
+        ```bash
+        tar -xzf pup-*.tar.gz
+        ```
+      </Step>
+      <Step title="Move to PATH">
+        ```bash
+        sudo mv pup /usr/local/bin/
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Verify installation
+
+Confirm that Pupload is installed correctly:
+
+```bash
+pup --version
+```
+
+You should see output showing the version number.
+
+## Set up Docker
+
+Pupload runs processing nodes in Docker containers. Make sure Docker is installed and running:
+
+```bash
+docker --version
+```
+
+If you need to install Docker, visit the [official Docker documentation](https://docs.docker.com/get-docker/).
+
+<Warning>
+Make sure your user has permission to run Docker commands. On Linux, you may need to add your user to the `docker` group:
+
+```bash
+sudo usermod -aG docker $USER
+```
+
+Log out and back in for changes to take effect.
+</Warning>
+
+## Optional: Redis setup
+
+For production deployments with separate controller and worker processes, you'll need Redis.
+
+<Tabs>
+  <Tab title="Docker">
+    Run Redis in a Docker container:
+
+    ```bash
+    docker run -d -p 6379:6379 redis:latest
+    ```
+  </Tab>
+
+  <Tab title="Local Install">
+    Install Redis using your package manager:
+
+    <CodeGroup>
+
+    ```bash macOS (Homebrew)
+    brew install redis
+    brew services start redis
+    ```
+
+    ```bash Ubuntu/Debian
+    sudo apt update
+    sudo apt install redis-server
+    sudo systemctl start redis-server
+    ```
+
+    ```bash Fedora/CentOS
+    sudo dnf install redis
+    sudo systemctl start redis
+    ```
+
+    </CodeGroup>
+  </Tab>
+</Tabs>
+
+<Info>
+For local development using `pup dev`, Redis is **not required**. The dev command runs an in-memory controller.
+</Info>
+
+## Next steps
+
+<Card
+  title="Quick start guide"
+  icon="rocket"
+  href="/quickstart"
+>
+  Create your first Pupload project and run a processing flow
+</Card>
